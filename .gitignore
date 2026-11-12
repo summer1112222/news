@@ -1,0 +1,21 @@
+# 依赖与缓存
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/
+
+# Node(docx 已从流水线移除,本地若有 node 产物不入库)
+node_modules/
+package.json
+package-lock.json
+
+# HTML 产物(CI 部署到 Pages,不入库;本地生成仅供预览)
+public/
+
+# 历史产物与调试转储(docx 已从流水线移除;bash 崩溃转储)
+*.docx
+*.stackdump
+
+# 视觉伴侣草稿(本地 brainstorm 用)
+.superpowers/

@@ -1,0 +1,46 @@
+name: 每日新闻推送
+
+on:
+  schedule:
+    # UTC 22:02 = 北京时间次日 06:02
+    # GitHub cron 有几分钟抖动,故避开整点高峰
+    - cron: '2 22 * * *'
+  workflow_dispatch: {}   # 手动触发,方便首次测试
+
+permissions:
+  contents: read
+  pages: write           # 部署 GitHub Pages 需要
+  id-token: write        # deploy-pages 需要
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 抓取并生成 HTML + 推送微信
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          ANYSEARCH_API_KEY: ${{ secrets.ANYSEARCH_API_KEY }}
+          PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
+          MAX_RESULTS: '5'
+        run: python scripts/build_digest.py
+
+      - name: 上传 Pages 产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./public
+
+      - name: 部署到 Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
