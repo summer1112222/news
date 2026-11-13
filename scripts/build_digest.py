@@ -77,31 +77,34 @@ _CSS = """
   }
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.7;-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.7;-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:transparent}
 .masthead{max-width:680px;margin:0 auto;padding:26px 16px 14px;border-bottom:3px double var(--accent)}
 .masthead-title{margin:0;font-family:var(--serif);font-size:25px;font-weight:700;letter-spacing:1px;line-height:1.2}
 .masthead-meta{margin:7px 0 0;font-family:var(--serif);font-size:12.5px;color:var(--ink-2)}
 .regions{max-width:680px;margin:0 auto;display:flex;gap:0;border:1px solid var(--rule);border-radius:7px;overflow:hidden;margin-top:14px}
-.region{flex:1;border:0;background:transparent;font-family:var(--sans);font-size:15px;color:var(--ink-2);padding:9px 0;cursor:pointer;text-align:center;border-right:1px solid var(--rule);transition:background .15s,color .15s;letter-spacing:2px}
+.region{flex:1;min-height:44px;border:0;background:transparent;font-family:var(--sans);font-size:15px;color:var(--ink-2);padding:10px 0;cursor:pointer;text-align:center;border-right:1px solid var(--rule);transition:background .15s,color .15s;letter-spacing:2px;user-select:none;-webkit-user-select:none;touch-action:manipulation}
 .region:last-child{border-right:0}
 .region.active{background:var(--accent);color:#fff;font-weight:600}
 .region:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
-.cats{position:sticky;top:0;z-index:10;background:var(--bg);max-width:680px;margin:0 auto;display:flex;overflow-x:auto;-webkit-overflow-scrolling:touch;border-bottom:1px solid var(--rule)}
-.cat{flex:0 0 auto;border:0;background:transparent;font-family:var(--sans);font-size:14px;color:var(--ink-2);padding:12px 13px;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:color .15s,border-color .15s}
+.cats{position:sticky;top:0;z-index:10;background:var(--bg);max-width:680px;margin:0 auto;display:flex;overflow-x:auto;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;border-bottom:1px solid var(--rule)}
+.cat{flex:0 0 auto;min-height:44px;border:0;background:transparent;font-family:var(--sans);font-size:14px;color:var(--ink-2);padding:12px 13px;cursor:pointer;white-space:nowrap;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;user-select:none;-webkit-user-select:none;touch-action:manipulation}
 .cat.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
 .cat:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
-main{max-width:680px;margin:0 auto;padding:6px 16px 56px}
+main{max-width:680px;margin:0 auto;padding:6px 16px calc(56px + env(safe-area-inset-bottom))}
 .panel{display:none}
 .panel-title{margin:20px 0 2px;font-family:var(--serif);font-size:19px;font-weight:700;padding-left:10px;border-left:3px solid var(--accent)}
 .panel-count{margin:0 0 6px;padding-left:13px;font-family:var(--serif);font-size:12px;color:var(--ink-2)}
 .news{padding:13px 0;border-bottom:1px solid var(--rule)}
 .news:last-child{border-bottom:0;padding-bottom:2px}
-.news-title{display:block;font-family:var(--serif);font-size:16.5px;font-weight:600;color:var(--ink);text-decoration:none;line-height:1.42}
+.news-title{display:block;font-family:var(--serif);font-size:16.5px;font-weight:600;color:var(--ink);text-decoration:none;line-height:1.42;overflow-wrap:anywhere;word-break:break-word}
 .news-title:hover{color:var(--accent);text-decoration:underline}
+.news-title:active{color:var(--accent)}
 .news-title:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:1px}
-.news-snippet{margin:6px 0 0;font-size:13.5px;color:var(--ink-2);line-height:1.62}
+.news-snippet{margin:6px 0 0;font-size:13.5px;color:var(--ink-2);line-height:1.62;overflow-wrap:anywhere;word-break:break-word}
 .empty{margin:0;padding:18px 0;font-family:var(--serif);font-size:14px;color:var(--ink-2)}
-footer{max-width:680px;margin:0 auto;padding:22px 16px 44px;font-family:var(--serif);font-size:12px;color:var(--ink-2);border-top:1px solid var(--rule)}
+footer{max-width:680px;margin:0 auto;padding:22px 16px calc(44px + env(safe-area-inset-bottom));font-family:var(--serif);font-size:12px;color:var(--ink-2);border-top:1px solid var(--rule)}
+@media (max-width:360px){.masthead{padding-left:12px;padding-right:12px}main{padding-left:12px;padding-right:12px}footer{padding-left:12px;padding-right:12px}.masthead-title{font-size:23px}.cat{padding:12px 10px}.news-title{font-size:16px}.news-snippet{font-size:13px}}
 @media (prefers-reduced-motion: reduce){.cat,.region{transition:none}}
 """
 
@@ -406,7 +409,7 @@ def build_html(today: str, categories_data: list) -> str:
     return (
         '<!doctype html>\n<html lang="zh-CN">\n<head>\n'
         '<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
         f"<title>每日新闻摘要 {html.escape(today)}</title>\n"
         "<style>\n" + _CSS + "\n</style>\n"
         "</head>\n<body>\n"
@@ -524,7 +527,9 @@ def push_serverchan(title: str, md: str) -> dict:
     url = f"https://sctapi.ftqq.com/{key}.send"
     sys.stderr.write(f"[推送] POST {url}\n")
     resp = requests.post(url, data={"title": title, "desp": md}, timeout=60)
-    resp.raise_for_status()
+    if not resp.ok:
+        sys.stderr.write(f"[推送失败] HTTP {resp.status_code} 响应体: {resp.text[:1000]}\n")
+        resp.raise_for_status()
     j = resp.json()
     if j.get("code") not in (0, None):
         raise SystemExit(f"❌ Server酱返回错误: {j}")
