@@ -532,10 +532,15 @@ def push_serverchan(title: str, md: str) -> dict:
     url = f"https://sctapi.ftqq.com/{key}.send"
     # 日志里对 key 打码,避免本地跑推送时密钥落到终端
     sys.stderr.write(f"[推送] POST https://sctapi.ftqq.com/{key[:3]}***.send\n")
-    resp = requests.post(url, data={"title": title, "desp": md}, timeout=60)
+    try:
+        resp = requests.post(url, data={"title": title, "desp": md}, timeout=60)
+    except requests.RequestException as e:
+        # 网络异常的消息会带完整 URL(含 key),用 type 名代替,不打印 e 本身
+        raise SystemExit(f"❌ 推送请求异常: {type(e).__name__}")
     if not resp.ok:
+        # 不用 resp.raise_for_status()——它的 HTTPError 消息里含完整 URL(含 key)
         sys.stderr.write(f"[推送失败] HTTP {resp.status_code} 响应体: {resp.text[:1000]}\n")
-        resp.raise_for_status()
+        raise SystemExit(f"❌ 推送失败 HTTP {resp.status_code}: {resp.text[:500]}")
     try:
         j = resp.json()
     except ValueError:
