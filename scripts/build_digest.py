@@ -47,13 +47,14 @@ from anysearch_search import search, search_many  # noqa: E402
 # 用"最新"提时效,避免用"头条新闻"这类词(它反而把网站首页/导航页顶上来);
 # 地域类主题(江浙沪皖/上海/南通)的"国外"用涉外/国际视角的搜索词
 CATEGORIES = [
-    # 全球类模块的「国外」用英文检索:中文搜国际新闻常被栏目页/旧闻占据,
-    # 英文词更容易命中当日外媒单篇报道(实测可拿到当天/前一天的最新稿件)
+    # 时政的「国外」用英文检索:中文搜国际时政常被栏目页/旧闻占据,
+    # 英文词更容易命中当日外媒单篇报道(实测可拿到当天/前一天稿件)。
+    # 其余模块国外仍用中文(英文泛词易混入活动页/报告页,反而不如中文出单篇)。
     ("📰 时政新闻", "最新 时政 要闻", "world politics news"),
-    ("📚 教育新闻", "最新 教育 新闻", "international education news"),
-    ("🌐 全球科技", "国内 最新 科技 新闻", "global technology news"),
-    ("💰 财经新闻", "最新 财经 股市", "global markets business news"),
-    ("🏥 全球医疗", "国内 最新 医疗 健康", "global health news"),
+    ("📚 教育新闻", "最新 教育 新闻", "国际 教育 新闻"),
+    ("🌐 全球科技", "国内 最新 科技 新闻", "全球 最新 科技 新闻"),
+    ("💰 财经新闻", "最新 财经 股市", "国际 最新 财经 股市"),
+    ("🏥 全球医疗", "国内 最新 医疗 健康", "全球 最新 医疗 健康"),
     ("🏙 江浙沪皖", "江苏 浙江 上海 安徽 最新 新闻", "江苏 浙江 上海 安徽 国际 涉外"),
     ("🌆 上海发展", "上海 最新 发展 新闻", "上海 国际 涉外 新闻"),
     ("🏖 南通发展", "南通 最新 发展 新闻", "南通 国际 涉外 新闻"),
@@ -690,6 +691,9 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
             continue
         # 机构营销软文:家庭教育服务机构的师资/服务自夸文,非新闻
         if any(h in title for h in _PROMO_TITLE_HINTS):
+            continue
+        # 英文聚合/栏目/活动/报告页(latest news、Department of、Conference、Outlook、含“|”)
+        if _is_english_title(title) and (_EN_NAV_RE.search(title) or _EN_EVENT_RE.search(title)):
             continue
         # 视频站 / 社交 / 聚合首页(含子域)
         host = _host_base(url)
