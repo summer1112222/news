@@ -11,6 +11,9 @@
   SERVERCHAN_SENDKEY   推送时必填,Server酱 SendKey
   ANYSEARCH_API_KEY    可选,提高 anysearch 速率上限
   MAX_RESULTS          可选,每类每个地域抓取条数,默认 10
+  MAX_DAYS             可选,旧闻 cutoff 天数,默认 7
+  TOP_N                可选,每类每地域最终展示条数,默认 10
+  REFRESH              可选,设为 1 忽略当天缓存强制重新抓取
   PAGES_BASE_URL       可选,页面部署地址(如 https://user.github.io/news)
                       设了才推送微信;不设只本地生成 HTML 供预览
 
@@ -22,6 +25,7 @@ import sys
 import io
 import re
 import html
+import json
 import time
 import datetime
 from urllib.parse import urlparse
@@ -36,7 +40,7 @@ if sys.stderr.encoding != "utf-8":
 
 # 让脚本能在仓库根目录或 scripts/ 下运行时都找到 anysearch_search
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from anysearch_search import search  # noqa: E402
+from anysearch_search import search, search_many  # noqa: E402
 
 # (分类标题, 国内搜索词, 国外搜索词) —— 搜索词会自动追加当天北京日期
 # 每个主题分国内/国外各抓 MAX_RESULTS 条,页面顶部「国内/国外」切换决定看哪一半
@@ -56,10 +60,66 @@ CATEGORIES = [
 
 # HTML 输出目录(GitHub Pages 产物根)
 OUT_DIR = "public"
+# 原始搜索缓存目录:同一天重复渲染时免去重新抓取(设 REFRESH=1 强制重抓)
+CACHE_DIR = ".cache"
+
+
+def _env_num(name: str, default, cast, lo=None, hi=None):
+    """读环境变量并做类型/范围校验,非法值回退默认,避免脏配置把整条流水线带崩。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = cast(raw)
+    except (TypeError, ValueError):
+        sys.stderr.write(f"[配置] {name}={raw!r} 非法,改用默认 {default}\n")
+        return default
+    if lo is not None and val < lo:
+        val = lo
+    if hi is not None and val > hi:
+        val = hi
+    return val
+
+
+def _write_text_atomic(path: str, text: str) -> None:
+    """先写临时文件再原子替换,避免中途失败留下半截 HTML。"""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _cache_file(today: str) -> str:
+    return os.path.join(CACHE_DIR, f"raw-{today}.json")
+
+
+def _load_raw_cache(today: str, queries: list) -> list:
+    """读取当天原始抓取结果;查询词不一致或文件损坏则返回空列表。"""
+    path = _cache_file(today)
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        bodies = data.get("bodies")
+        if data.get("queries") == queries and isinstance(bodies, list) \
+                and len(bodies) == len(queries):
+            return bodies
+    except (OSError, ValueError):
+        pass
+    return []
+
+
+def _save_raw_cache(today: str, queries: list, bodies: list) -> None:
+    try:
+        payload = {"queries": queries, "bodies": bodies, "saved_at": int(time.time())}
+        _write_text_atomic(_cache_file(today), json.dumps(payload, ensure_ascii=False))
+    except OSError as e:
+        sys.stderr.write(f"[缓存] 写入失败(忽略): {e}\n")
 
 # tab 页样式(纯字符串,避免 f-string 与 CSS 花括号冲突)
 _CSS = """
 :root{
+  color-scheme:light dark;
   --bg:#F9F7F2;
   --ink:#1A1A1A;
   --ink-2:#6B6660;
@@ -93,7 +153,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font
 .cat.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
 .cat:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
 main{max-width:680px;margin:0 auto;padding:6px 16px calc(56px + env(safe-area-inset-bottom))}
-.panel{display:none}
+[hidden]{display:none!important}
 .panel-title{margin:20px 0 2px;font-family:var(--serif);font-size:19px;font-weight:700;padding-left:10px;border-left:3px solid var(--accent)}
 .panel-count{margin:0 0 6px;padding-left:13px;font-family:var(--serif);font-size:12px;color:var(--ink-2)}
 .news{padding:13px 0;border-bottom:1px solid var(--rule)}
@@ -102,9 +162,26 @@ main{max-width:680px;margin:0 auto;padding:6px 16px calc(56px + env(safe-area-in
 .news-title:hover{color:var(--accent);text-decoration:underline}
 .news-title:active{color:var(--accent)}
 .news-title:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:1px}
+.news-meta{margin:4px 0 0;font-family:var(--serif);font-size:11.5px;color:var(--ink-2);letter-spacing:.4px}
 .news-snippet{margin:6px 0 0;font-size:13.5px;color:var(--ink-2);line-height:1.62;overflow-wrap:anywhere;word-break:break-word}
+.news-meta + .news-snippet{margin-top:3px}
 .empty{margin:0;padding:18px 0;font-family:var(--serif);font-size:14px;color:var(--ink-2)}
 footer{max-width:680px;margin:0 auto;padding:22px 16px calc(44px + env(safe-area-inset-bottom));font-family:var(--serif);font-size:12px;color:var(--ink-2);border-top:1px solid var(--rule)}
+footer a{color:var(--accent);text-underline-offset:3px}
+.skip-link{position:absolute;left:-9999px;top:8px;z-index:100;background:var(--accent);color:#fff;padding:8px 14px;border-radius:6px;font-family:var(--sans);font-size:14px;text-decoration:none}
+.skip-link:focus{left:8px;outline:2px solid var(--ink);outline-offset:2px}
+.to-top{position:fixed;right:18px;bottom:calc(18px + env(safe-area-inset-bottom));width:42px;height:42px;border-radius:50%;border:1px solid var(--rule);background:var(--bg);color:var(--ink-2);font-size:18px;line-height:1;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.14);z-index:20}
+.to-top:hover,.to-top:focus-visible{color:var(--accent);border-color:var(--accent);outline:none}
+@media (prefers-reduced-motion: no-preference){
+  .panel:not([hidden]){animation:fade .22s ease both}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+}
+@media print{
+  .cats,.regions,.region-bar,.to-top,footer{display:none!important}
+  .panel[hidden],.news-group[hidden]{display:block!important}
+  .news{break-inside:avoid}
+  a{color:inherit;text-decoration:none}
+}
 @media (max-width:360px){.masthead{padding-left:12px;padding-right:12px}main{padding-left:12px;padding-right:12px}footer{padding-left:12px;padding-right:12px}.masthead-title{font-size:23px}.cat{padding:12px 10px}.news-title{font-size:16px}.news-snippet{font-size:13px}}
 @media (prefers-reduced-motion: reduce){.cat,.region{transition:none}}
 """
@@ -112,6 +189,7 @@ footer{max-width:680px;margin:0 auto;padding:22px 16px calc(44px + env(safe-area
 # PC 版样式:宽屏网格,每分类一个卡片,国内/国外同卡上下展示,无需 tab 切换
 _CSS_PC = """
 :root{
+  color-scheme:light dark;
   --bg:#F9F7F2;--ink:#1A1A1A;--ink-2:#6B6660;--rule:#E3DED2;--accent:#8B2A2A;
   --serif:"Source Han Serif SC","Noto Serif SC","Songti SC","SimSun",serif;
   --sans:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
@@ -142,15 +220,37 @@ main{margin-top:18px}
 .news:last-child{border-bottom:0;padding-bottom:2px}
 .news-title{display:block;font-family:var(--serif);font-size:15.5px;font-weight:600;color:var(--ink);text-decoration:none;line-height:1.42;overflow-wrap:anywhere;word-break:break-word}
 .news-title:hover{color:var(--accent);text-decoration:underline}
+.news-meta{margin:4px 0 0;font-family:var(--serif);font-size:11.5px;color:var(--ink-2);letter-spacing:.4px}
 .news-snippet{margin:5px 0 0;font-size:13px;color:var(--ink-2);line-height:1.6;overflow-wrap:anywhere;word-break:break-word}
+.news-meta + .news-snippet{margin-top:3px}
 .empty{margin:0;padding:18px 0;font-family:var(--serif);font-size:14px;color:var(--ink-2)}
 footer{max-width:860px;margin:24px auto 0;padding:18px 24px;font-family:var(--serif);font-size:12px;color:var(--ink-2);border-top:1px solid var(--rule)}
+footer a{color:var(--accent);text-underline-offset:3px}
+.skip-link{position:absolute;left:-9999px;top:8px;z-index:100;background:var(--accent);color:#fff;padding:8px 14px;border-radius:6px;font-family:var(--sans);font-size:14px;text-decoration:none}
+.skip-link:focus{left:8px;outline:2px solid var(--ink);outline-offset:2px}
+[hidden]{display:none!important}
+.to-top{position:fixed;right:24px;bottom:24px;width:42px;height:42px;border-radius:50%;border:1px solid var(--rule);background:var(--bg);color:var(--ink-2);font-size:18px;line-height:1;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.14);z-index:20}
+.to-top:hover,.to-top:focus-visible{color:var(--accent);border-color:var(--accent);outline:none}
+@media (prefers-reduced-motion: no-preference){
+  .panel:not([hidden]){animation:fade .22s ease both}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+}
+@media print{
+  .tabs,.region-bar,.to-top,footer{display:none!important}
+  .panel[hidden],.news-group[hidden]{display:block!important}
+  .news{break-inside:avoid}
+  a{color:inherit;text-decoration:none}
+}
 """
 
 
 def beijing_date() -> str:
     """GitHub Actions 跑在 UTC,统一用北京日期作为摘要日期。"""
-    return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)).strftime("%Y-%m-%d")
+    return _beijing_now().strftime("%Y-%m-%d")
+
+
+def _beijing_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)
 
 
 def domain_source(url: str) -> str:
@@ -159,9 +259,77 @@ def domain_source(url: str) -> str:
         return ""
     try:
         net = urlparse(url).netloc
+        if net.startswith("www."):
+            net = net[4:]
         return net or url
     except Exception:
         return url
+
+
+# 摘要里常见的站点导航/元信息噪音;在截断前先清掉,避免一行摘要全是“首页 登录 客户端”
+_SNIPPET_NOISE_RE = re.compile(
+    r"正在阅读[:：]?|更新时间[:：]?|Updated|发表于|发布于|来源[:：]|作者[:：]|"
+    r"编辑[:：]|责任编辑[:：]|阅读原文|打开\s*app[^ ]*|举报|独家原创|"
+    r"相关推荐|为您推荐|热点新闻|财经信源|科技精选|微信|微博|QQ空间|朋友圈|"
+    r"新浪新闻|凤凰网|腾讯新闻|搜狐|网易|界面新闻|澎湃新闻|客户端|扫码下载|"
+    r"网站地图|首页|导航|登录|注册|更多",
+    re.I,
+)
+# 时间戳/“date: 7 hours ago”之类元信息
+_SNIPPET_TIME_RE = re.compile(
+    r"(?<!\d)20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?!\d)|"
+    r"(?<!\d)\d{1,2}月\d{1,2}日|"
+    r"(?<!\d)\d{1,2}:\d{2}(?::\d{2})?(?!\d)|"
+    r"date\s*:\s*[^,，。;；]{0,24}?ago|"
+    r"\b\d+\s*(?:hours?|days?|minutes?)\s+ago\b",
+    re.I,
+)
+_SENTENCE_END_RE = re.compile(r"[。！？!?；;]")
+
+
+def _clean_snippet(text: str, title: str = "", limit: int = 150) -> str:
+    """把搜索返回的整页正文压成一句干净的导语。
+
+    搜索结果的 snippet 往往是页面正文全文,开头混着标题重复、站点导航、时间戳。
+    这里依次:去 Markdown 标记/URL → 去重复标题 → 去导航与时间戳噪音 →
+    在句末标点处截断(至少保留 40 字),得到适合列表展示的一行摘要。
+    """
+    s = html.unescape(text or "")
+    s = s.replace("\u3000", " ").replace("\xa0", " ")
+    s = re.sub(r"https?://\S+", " ", s)
+    s = re.sub(r"^[\s#>*\-]+", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    # 开头常见「标题_站点 # 标题 正文」:优先取第一个标题标记之后的正文
+    if "#" in s[:200]:
+        s = s[s.rfind("#", 0, 200) + 1:].strip()
+
+    if title:
+        t = title.strip()
+        if t and s.lower().startswith(t.lower()):
+            s = s[len(t):].lstrip(" _-|｜—")
+    # 标题后常跟一长串 | 分隔的标签(上海市|联合国人居署|…_),标签里没有句末标点,整段丢掉
+    m = re.search(r"[_#]", s[:180])
+    if m and not _SENTENCE_END_RE.search(s[:m.start()]):
+        s = s[m.end():].lstrip(" _-|｜—#")
+
+    s = re.sub(r"(?<!\d)\d{7,}(?!\d)", " ", s)  # 长数字 id
+    s = re.sub(r"/?enpproperty\s*--?>?", " ", s, flags=re.I)
+    s = _SNIPPET_TIME_RE.sub(" ", s)
+    s = _SNIPPET_NOISE_RE.sub(" ", s)
+    s = re.sub(r"[\]\[【】<>《》|｜]+", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    s = s.strip(" _-|｜—,，、;；:：#")
+
+    if len(s) <= limit:
+        return s
+    window = s[:limit]
+    last = None
+    for m in _SENTENCE_END_RE.finditer(window):
+        last = m
+    if last and last.end() >= 40:
+        return window[:last.end()]
+    return window.rstrip("，,、；;：: ") + "…"
 
 
 def parse_results(md_text: str) -> list:
@@ -170,7 +338,7 @@ def parse_results(md_text: str) -> list:
     anysearch 单条搜索输出格式:
         ### 1. 标题
         - **URL**: https://...
-        - 摘要文本...
+        - 正文/摘要(整页内容,需要清洗)
     """
     items = []
     blocks = re.split(r"### \d+\.\s+", md_text)
@@ -178,7 +346,7 @@ def parse_results(md_text: str) -> list:
         lines = [ln for ln in block.splitlines() if ln.strip()]
         if not lines:
             continue
-        title = lines[0].strip()
+        title = re.sub(r"^#+\s*", "", lines[0]).strip()
         url = ""
         snippet_parts = []
         for line in lines[1:]:
@@ -191,6 +359,9 @@ def parse_results(md_text: str) -> list:
             "title": title,
             "url": url,
             "source": domain_source(url),
+            # 存原始摘要(保留日期):clean_items 的旧闻过滤、pub_date、sort_items_recent
+            # 都从 url+title+snippet 提日期(凤凰大风号等站发布日期常只在摘要里);
+            # 显示时再由 _clean_snippet 压成干净导语,避免过滤与显示共用一个被剥光的字段
             "snippet": " ".join(snippet_parts)[:220],
         })
     return items
@@ -220,7 +391,7 @@ _NAV_TITLE_HINTS = ("首页", "导航", "主页", "官网", "网站地图", "全
                     "State of Kids", "State of Families", "Cornerstone", "International Import Expo",
                     # 中文栏目页残留:概況/国际会议列表/外事日程/数据发布/经贸新闻/图片频道
                     "概況", "国际会议", "外事日程", "数据发布", "经贸新闻", "图片频道", "公寓式酒店",
-                    "新闻直播", "招生录取", "Newsroom")
+                    "新闻直播", "招生录取", "Newsroom", "时政快报")
 
 # 标题(去空格后)完全等于这些通用词的,是栏目名不是单条新闻
 _GENERIC_TITLES = {
@@ -230,6 +401,8 @@ _GENERIC_TITLES = {
     "早报", "晚报", "快讯", "播报", "热点", "要闻", "头条", "在线报导", "观察",
     # 裸地名/两三字栏目页残留(“上海”“南通”“经贸新闻”等)
     "上海", "南通", "经贸新闻", "数据发布", "外事日程", "国际会议", "Findings",
+    # 栏目页/频道名:“新闻发布”(商务部发布栏)、“News”(英文栏目页)
+    "新闻发布", "News",
 }
 
 # 栏目_站点/机构 页:前半是通用栏目或地名,后半是机构/政府/媒体站点
@@ -252,6 +425,29 @@ _GENERIC_PREFIX_RE = re.compile(
     r"财经新闻|财政新闻|教育新闻|科技新闻|医疗新闻|健康新闻|头条|要闻|早报|晚报)[_\-—–·|\[［]"
 )
 
+# 自媒体/栏目名作前缀(时政要闻 赵孝…、财报揭秘室｜…、科技精选 …):剥掉后才是真正的标题
+_COLUMN_PREFIX_RE = re.compile(
+    r"^(时政要闻|热点新闻|今日头条|科技精选|财经信源|财报揭秘室|城市速递|"
+    r"环球拾见|凤凰国际财闻汇|凤凰AI研究院|南方观察|澎湃新闻)\s*[|｜:：\-—]?\s+"
+)
+
+# 标题尾部的发布日期(常见于大风号:"…会议 2026-11-03"),展示前剥掉
+_TRAILING_DATE_RE = re.compile(
+    r"[（(]?20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?[)）]?\s*$"
+)
+
+
+def _dedupe_title_key(title: str) -> str:
+    """生成更稳的去重键:去空白/尾部日期/尾部年份/尾部标点。
+
+    同一篇稿子常以“…博览会开幕”与“…博览会开幕 2026”两种形态重复出现,
+    仅去空白无法合并;这里再去掉尾部年份与标点,降低重复率。
+    """
+    s = re.sub(r"\s+", "", title)
+    s = re.sub(r"[（(]?20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?[)）]?$", "", s)
+    s = re.sub(r"(?<=[^\d])20\d{2}$", "", s)  # 尾部年份(要求前面不是数字)
+    return s.strip("，,。.！!？?；;：:-—_|｜、·")
+
 
 def _host_base(url: str) -> str:
     """从 URL 取净域名(去 www. 前缀),失败返回空串。"""
@@ -273,6 +469,54 @@ def _is_root_path(url: str) -> bool:
     if p in ("", "/"):
         return True
     return p.strip("/").lower() in ("index.html", "index.htm", "index.php", "home")
+
+
+def _is_section_page(url: str) -> bool:
+    """URL 是否像栏目/频道首页而非单篇文章。
+
+    站点根(由 _is_root_path 认);或 path 末段是 index/default/home 等首页文件;
+    或 path 仅 1-2 段且末段是纯字母短词(如 /news /xwfb /en ——真实文章页末段一般含
+    日期或长数字 id);或话题聚合页 /topics/。拦掉「新闻发布」/en/news、「駐洛杉磯…」
+    /uslax/index.html、「国际-BBC」/zhongwen/topics/… 这类栏目/机构首页。
+    """
+    if _is_root_path(url):
+        return True
+    try:
+        path = urlparse(url).path.lower()
+    except Exception:
+        return False
+    if "/topics/" in path or "/topic/" in path:
+        return True
+    segs = [s for s in path.split("/") if s]
+    if not segs:
+        return True
+    last = segs[-1]
+    if last in ("index.html", "index.htm", "index.php", "index.shtml",
+                "default.html", "default.htm", "home", "main.html"):
+        return True
+    # 仅单段纯字母短词判为栏目入口(如 /news /xwfb /en);2 段纯字母(如 /opinion/column)
+    # 既可能是栏目也可能是文章分页,不再靠此规则误杀,改由标题 NAV/通用栏目规则兜底。
+    if len(segs) == 1 and re.fullmatch(r"[a-z]{1,12}", last):
+        return True
+    return False
+
+
+def _title_substance(title: str) -> str:
+    """去掉标题里的日期/时间/星期/括注/标点/空白/数字,返回实质文字。
+
+    实质过短(<3 字)说明是裸日期(「2026年11月2日」)、纯数字(「0」)、或纯栏目符号,
+    不是有效新闻标题。剥完后用于判空过滤,不影响显示用的原标题。
+    """
+    s = title
+    s = re.sub(r"20\d{2}年\d{1,2}月\d{1,2}日", "", s)
+    s = re.sub(r"20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}", "", s)
+    s = re.sub(r"(?<!\d)20\d{6}(?!\d)", "", s)  # 连写式 20261113
+    s = re.sub(r"\d{1,2}月\d{1,2}日", "", s)
+    s = re.sub(r"\d{1,2}:\d{2}", "", s)
+    s = re.sub(r"[周星期]+[一二三四五六日天]", "", s)
+    s = re.sub(r"[\[【(（][^】\])）]*[】\])）]", "", s)
+    s = re.sub(r"[\s\d\W_]+", "", s, flags=re.UNICODE)
+    return s
 
 
 def _parse_all_dates(s: str, today_year: str = "") -> list:
@@ -311,6 +555,14 @@ def _parse_all_dates(s: str, today_year: str = "") -> list:
     return sorted(found)
 
 
+def pub_date(it: dict, today: str) -> str:
+    """条目可考的最新发布日期(<= 今天),没有则返回空串。"""
+    blob = " ".join((it.get("url", ""), it.get("title", ""), it.get("snippet", "")))
+    dates = _parse_all_dates(blob, today[:4] if today else "")
+    past = [d for d in dates if today and d <= today]
+    return max(past) if past else ""
+
+
 def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -> list:
     """后处理过滤:去首页/导航页/视频站/裸URL标题/旧闻,按 URL+标题去重。
 
@@ -334,10 +586,17 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
     for it in items:
         url = it.get("url", "")
         title = it.get("title", "").strip()
+        # 注意:不在此剥标题开头的发布时间戳前缀——它正是旧闻过滤与排序的日期来源之一
+        # (URL 无日期时,标题前缀「2026-11-02 14:30」可能是唯一线索)。前缀剥离只在
+        # 渲染显示时做(_render_news_item / build_wechat_msg),过滤判断用原始标题。
+        # _title_substance 自身会去日期,故裸日期标题「2026年11月2日」仍会被下面的实质<3过滤拦掉。
 
         # 裸 URL 当标题:标题本身就是 http... 或裸域名
         if not title or re.match(r"^https?://", title, re.I) \
                 or re.match(r"^[\w.-]+\.[a-z]{2,}/?$", title, re.I):
+            continue
+        # 标题实质内容过短:裸日期(2026年11月2日)/纯数字(0)/纯栏目符号,非有效新闻
+        if len(_title_substance(title)) < 3:
             continue
         # 标题含导航/首页字样
         if any(h in title for h in _NAV_TITLE_HINTS):
@@ -373,8 +632,8 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
         host = _host_base(url)
         if host and any(host == h or host.endswith("." + h) for h in _JUNK_HOSTS):
             continue
-        # 站点根首页
-        if _is_root_path(url):
+        # 栏目/频道首页(站点根、index.html、短字母路径、/topics/ 话题聚合页)
+        if _is_section_page(url):
             continue
         # 旧闻:日期从 URL、标题、摘要里提(anysearch 不返回 date 字段,
         # 凤凰大风号等站的发布日期常只在摘要里,只看 URL+标题会漏旧闻)
@@ -426,6 +685,18 @@ def _clip(text: str, n: int = 50) -> str:
     return text[:n].rstrip() + "…"
 
 
+# 标题开头的发布时间戳前缀(2026-11-02 14:30 / 2026年11月3日):过滤/排序时保留作日期线索,
+# 仅在显示时剥掉,避免用户看到裸日期标题。
+_TITLE_PREFIX_RE = re.compile(
+    r"^20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s+\d{1,2}:\d{2})?\s*"
+)
+
+
+def _strip_title_prefix(title: str) -> str:
+    """剥掉标题开头的发布时间戳前缀,用于显示。"""
+    return _TITLE_PREFIX_RE.sub("", title.strip()).strip()
+
+
 def sort_items_recent(items: list, today: str) -> list:
     """按发布日期降序排(最新在前);无日期线索的排末尾,保持原相对顺序(稳定排序)。
 
@@ -433,218 +704,282 @@ def sort_items_recent(items: list, today: str) -> list:
     取未来日期会错排到最前)。无任何日期线索的条目 key 为空串,降序时落在所有
     有日期条目之后。字符串比较即可:YYYY-MM-DD 字典序与时间序一致。
     """
-    today_year = today[:4] if today else ""
-
-    def _key(it: dict) -> str:
-        blob = " ".join((it.get("url", ""), it.get("title", ""), it.get("snippet", "")))
-        dates = _parse_all_dates(blob, today_year)
-        past = [d for d in dates if today and d <= today]
-        return max(past) if past else ""
-
-    return sorted(items, key=_key, reverse=True)
+    return sorted(items, key=lambda it: pub_date(it, today), reverse=True)
 
 
-def _render_news_item(it: dict) -> str:
-    """渲染单条新闻(标题超链接 + 摘要),供 build_html 复用。"""
-    title_text = html.escape(_clip(it["title"]))
+def _render_news_item(it: dict, today: str = "") -> str:
+    """渲染单条新闻:标题超链接 + 来源/日期元信息 + 一句摘要。"""
+    title_text = html.escape(_clip(_strip_title_prefix(it["title"])))
     if it["url"]:
         url = html.escape(it["url"], quote=True)
         title_line = f'<a class="news-title" href="{url}" target="_blank" rel="noopener noreferrer">{title_text}</a>'
     else:
         title_line = f'<span class="news-title">{title_text}</span>'
-    if it["snippet"]:
-        snippet = html.escape(it["snippet"])
-        title_line += f'\n<p class="news-snippet">{snippet}</p>'
-    return f'<article class="news">{title_line}</article>'
+
+    meta_bits = []
+    if it.get("source"):
+        meta_bits.append(html.escape(it["source"]))
+    d = pub_date(it, today)
+    if d:
+        meta_bits.append(d[5:])  # YYYY-MM-DD -> MM-DD
+    meta_html = f'<p class="news-meta">{" · ".join(meta_bits)}</p>' if meta_bits else ""
+
+    snippet_html = ""
+    snip = _clean_snippet(it.get("snippet", ""), _strip_title_prefix(it.get("title", "")))
+    if snip:
+        snippet_html = f'<p class="news-snippet">{html.escape(snip)}</p>'
+
+    return "\n".join(p for p in (
+        '<article class="news">', title_line, meta_html, snippet_html, "</article>"
+    ) if p)
 
 
-def _render_news_group(items: list, region: str, is_default: bool) -> str:
+def _render_news_group(items: list, region: str, is_default: bool, today: str = "") -> str:
     """渲染一个地域(国内/国外)的条目组,包裹在 .news-group 里。
 
-    is_default=True 的是默认显示的地域(国内),其余默认 display:none。
+    is_default=True 的是默认显示的地域(国内),其余用 hidden 属性默认隐藏
+    (无 JS 时由 noscript 样式兜底展开)。
     """
-    style = "" if is_default else ' style="display:none"'
+    hidden = "" if is_default else " hidden"
     if not items:
-        return f'<div class="news-group {region}"{style}><p class="empty">此类暂无更新。</p></div>'
-    body = "\n".join(_render_news_item(it) for it in items)
-    return f'<div class="news-group {region}"{style}>\n{body}\n</div>'
+        return f'<div class="news-group {region}"{hidden}><p class="empty">此类暂无更新。</p></div>'
+    body = "\n".join(_render_news_item(it, today) for it in items)
+    return f'<div class="news-group {region}"{hidden}>\n{body}\n</div>'
 
 
-def build_html(today: str, categories_data: list) -> str:
-    """生成“每日晨报”版面:刊头 masthead + 国内/国外切换 + sticky 分类导航 + 发丝线分隔的条目流。
+_FAVICON = (
+    "data:image/svg+xml,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E"
+    "%3Crect width='64' height='64' rx='12' fill='%238B2A2A'/%3E"
+    "%3Ctext x='32' y='45' font-size='34' text-anchor='middle' "
+    "fill='%23F9F7F2' font-family='serif'%3E报%3C/text%3E%3C/svg%3E"
+)
 
-    每个主题面板内含国内、国外两组条目,顶部「国内/国外」切换决定显示哪一组;
-    分类 tab 切换决定显示哪个主题面板。标题做超链接(点开跳原文),默认墨色、hover 变暗红。
-    """
+# 移动版/PC 版共用交互:分类 tab、国内/国外切换、URL hash 深链、键盘导航、回到顶部。
+# 走 data-* 属性定位元素,两版 DOM 结构不同也能复用同一段脚本。
+_PAGE_JS = """
+(function(){
+  var tabs=[].slice.call(document.querySelectorAll('[data-cat]'));
+  var panels=[].slice.call(document.querySelectorAll('[data-panel]'));
+  var regionBtns=[].slice.call(document.querySelectorAll('[data-region]'));
+  var groups=[].slice.call(document.querySelectorAll('.news-group'));
+  var state={cat:0,region:'domestic'};
+
+  function clampCat(v){v=parseInt(v,10);return (isNaN(v)||v<0||v>=panels.length)?0:v;}
+  function render(scroll){
+    panels.forEach(function(p){p.hidden=parseInt(p.dataset.panel,10)!==state.cat;});
+    groups.forEach(function(g){g.hidden=!g.classList.contains(state.region);});
+    tabs.forEach(function(t){
+      var on=parseInt(t.dataset.cat,10)===state.cat;
+      t.classList.toggle('active',on);
+      t.setAttribute('aria-selected',on?'true':'false');
+      t.tabIndex=on?0:-1;
+    });
+    regionBtns.forEach(function(b){
+      var on=b.dataset.region===state.region;
+      b.classList.toggle('active',on);
+      b.setAttribute('aria-pressed',on?'true':'false');
+    });
+    if(scroll){
+      var a=tabs[state.cat];
+      if(a&&a.scrollIntoView)a.scrollIntoView({block:'nearest',inline:'center'});
+      window.scrollTo({top:0,behavior:'smooth'});
+    }
+  }
+  function parseHash(){
+    var h=location.hash.replace(/^#/,'');
+    if(!h)return;
+    try{
+      var p=new URLSearchParams(h);
+      if(p.has('cat'))state.cat=clampCat(p.get('cat'));
+      var r=p.get('region');
+      if(r==='domestic'||r==='foreign')state.region=r;
+    }catch(e){}
+  }
+  var STORE_KEY='news-digest-state';
+  function saveState(){
+    try{localStorage.setItem(STORE_KEY,JSON.stringify(state));}catch(e){}
+  }
+  function loadSaved(){
+    try{
+      var s=JSON.parse(localStorage.getItem(STORE_KEY)||'null');
+      if(s&&(s.region==='domestic'||s.region==='foreign')){
+        state.cat=clampCat(s.cat);state.region=s.region;return true;
+      }
+    }catch(e){}
+    return false;
+  }
+  function writeHash(){
+    var hash='#cat='+state.cat+'&region='+state.region;
+    if(location.hash!==hash&&history.replaceState)history.replaceState(null,'',hash);
+    saveState();
+  }
+  function selectCat(i,scroll){state.cat=i;render(scroll);writeHash();}
+
+  tabs.forEach(function(t){
+    t.addEventListener('click',function(){selectCat(parseInt(t.dataset.cat,10)||0,true);});
+    t.addEventListener('keydown',function(e){
+      var k=e.key,i=state.cat;
+      if(k==='ArrowRight')i=(i+1)%tabs.length;
+      else if(k==='ArrowLeft')i=(i-1+tabs.length)%tabs.length;
+      else if(k==='Home')i=0;
+      else if(k==='End')i=tabs.length-1;
+      else return;
+      e.preventDefault();selectCat(i,true);tabs[i].focus();
+    });
+  });
+  regionBtns.forEach(function(b){
+    b.addEventListener('click',function(){state.region=b.dataset.region;render(false);writeHash();});
+  });
+
+  var topBtn=document.getElementById('toTop');
+  if(topBtn){
+    var sync=function(){topBtn.hidden=window.scrollY<600;};
+    window.addEventListener('scroll',sync,{passive:true});
+    topBtn.addEventListener('click',function(){window.scrollTo({top:0,behavior:'smooth'});});
+    sync();
+  }
+  window.addEventListener('hashchange',function(){parseHash();render(false);});
+  var hadHash=location.hash.replace(/^#/,'').length>0;
+  parseHash();
+  if(!hadHash)loadSaved();  // 无深链时恢复上次浏览的分类/地域
+  render(false);
+})();
+"""
+
+
+def _render_panels(today: str, categories_data: list, pc: bool) -> str:
+    """渲染全部分类面板,国内/国外两组条目共用同一套 item/group 渲染。"""
+    prefix = "pc-panel-" if pc else "panel-"
+    panels = []
+    for i, cat in enumerate(categories_data):
+        hidden = "" if i == 0 else " hidden"
+        title = html.escape(short_cat(cat["category"]))
+        d, f = len(cat["domestic"]), len(cat["foreign"])
+        body = (
+            _render_news_group(cat["domestic"], "domestic", True, today)
+            + "\n"
+            + _render_news_group(cat["foreign"], "foreign", False, today)
+        )
+        if pc:
+            head = (
+                '<div class="panel-head">\n'
+                f'<h2 class="panel-title">{title}</h2>\n'
+                f'<p class="panel-count">国内 {d} · 国外 {f}</p>\n'
+                '</div>'
+            )
+        else:
+            head = (
+                f'<h2 class="panel-title">{title}</h2>\n'
+                f'<p class="panel-count">国内{d}条 · 国外{f}条</p>'
+            )
+        panels.append(
+            f'<section class="panel" id="{prefix}{i}" role="tabpanel" '
+            f'aria-labelledby="{prefix}tab-{i}" data-panel="{i}"{hidden}>\n'
+            f'{head}\n{body}\n</section>'
+        )
+    return "\n".join(panels)
+
+
+def _render_page(today: str, categories_data: list, pc: bool) -> str:
+    """生成完整页面。PC/移动两版共用头部结构、交互脚本与条目渲染,仅布局不同。"""
     dom_total = sum(len(c["domestic"]) for c in categories_data)
     for_total = sum(len(c["foreign"]) for c in categories_data)
     n = len(categories_data)
+    updated = _beijing_now().strftime("%H:%M")
+    prefix = "pc-panel-" if pc else "panel-"
+    tab_class = "tab-btn" if pc else "cat"
+    nav_class = "tabs" if pc else "cats"
+    region_class = "region-btn" if pc else "region"
+    region_wrap_class = "region-bar" if pc else "regions"
+    css = _CSS_PC if pc else _CSS
 
     tab_btns = []
     for i, cat in enumerate(categories_data):
         name = html.escape(short_cat(cat["category"]))
-        cls = "cat active" if i == 0 else "cat"
+        cls = f"{tab_class} active" if i == 0 else tab_class
+        selected = "true" if i == 0 else "false"
+        tabindex = "0" if i == 0 else "-1"
         tab_btns.append(
-            f'<button type="button" class="{cls}" onclick="showTab({i})">{name}</button>'
+            f'<button type="button" class="{cls}" role="tab" id="{prefix}tab-{i}" '
+            f'aria-controls="{prefix}{i}" aria-selected="{selected}" tabindex="{tabindex}" '
+            f'data-cat="{i}">{name}</button>'
         )
 
     region_bar = (
-        '<div class="regions">\n'
-        '<button type="button" class="region region-domestic active" '
-        'onclick="showRegion(\'domestic\')">国内</button>\n'
-        '<button type="button" class="region region-foreign" '
-        'onclick="showRegion(\'foreign\')">国外</button>\n'
+        f'<div class="{region_wrap_class}" role="group" aria-label="地域切换">\n'
+        f'<button type="button" class="{region_class} domestic active" data-region="domestic" '
+        'aria-pressed="true">国内</button>\n'
+        f'<button type="button" class="{region_class} foreign" data-region="foreign" '
+        'aria-pressed="false">国外</button>\n'
         '</div>'
     )
 
-    panels = []
-    for i, cat in enumerate(categories_data):
-        style = "" if i == 0 else ' style="display:none"'
-        title = html.escape(short_cat(cat["category"]))
-        d = len(cat["domestic"])
-        f = len(cat["foreign"])
-        body = (
-            _render_news_group(cat["domestic"], "domestic", is_default=True)
-            + "\n"
-            + _render_news_group(cat["foreign"], "foreign", is_default=False)
-        )
-        panels.append(
-            f'<section class="panel" id="panel-{i}"{style}>\n'
-            f'<h2 class="panel-title">{title}</h2>\n'
-            f'<p class="panel-count">国内{d}条 · 国外{f}条</p>\n'
-            f'{body}\n'
-            f'</section>'
-        )
+    archive_href = "index.html" if pc else f"digest-{today}.html"
+    archive_label = "移动版" if pc else "PC 宽屏版"
+    meta_label = " · PC版" if pc else ""
+    desc = (
+        f"每日新闻摘要 {today}:时政、教育、全球科技、财经、全球医疗、江浙沪皖、"
+        "上海、南通、培养孩子 9 类新闻,国内/国外双视角。"
+    )
 
-    return (
+    head = (
         '<!doctype html>\n<html lang="zh-CN">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
-        f"<title>每日新闻摘要 {html.escape(today)}</title>\n"
-        "<style>\n" + _CSS + "\n</style>\n"
-        "</head>\n<body>\n"
+        '<meta name="color-scheme" content="light dark">\n'
+        f'<title>每日新闻摘要{"(PC版) " if pc else " "}{html.escape(today)}</title>\n'
+        f'<meta name="description" content="{html.escape(desc)}">\n'
+        f'<meta property="og:title" content="每日新闻摘要 {html.escape(today)}">\n'
+        f'<meta property="og:description" content="{html.escape(desc)}">\n'
+        '<meta property="og:type" content="website">\n'
+        '<meta name="twitter:card" content="summary">\n'
+        '<meta name="theme-color" content="#F9F7F2" media="(prefers-color-scheme: light)">\n'
+        '<meta name="theme-color" content="#16140F" media="(prefers-color-scheme: dark)">\n'
+        f'<link rel="icon" href="{_FAVICON}">\n'
+        f'<style>\n{css}\n</style>\n'
+        '<noscript><style>.panel[hidden],.news-group[hidden]{display:block!important}</style></noscript>\n'
+        '</head>\n'
+    )
+
+    header = (
         '<header class="masthead">\n'
         '<h1 class="masthead-title">每日新闻摘要</h1>\n'
-        f'<p class="masthead-meta">{html.escape(today)} · {n}类 · 国内{dom_total}条 · 国外{for_total}条</p>\n'
-        f"{region_bar}\n"
-        "</header>\n"
-        '<nav class="cats">' + "".join(tab_btns) + "</nav>\n"
-        '<main>\n' + "\n".join(panels) + "\n</main>\n"
-        '<footer>每日更新 · 点标题可跳转原文 · 顶部切换国内/国外</footer>\n'
-        '<script>\n'
-        "function showTab(i){"
-        "var p=document.querySelectorAll('.panel');"
-        "for(var k=0;k<p.length;k++)p[k].style.display='none';"
-        "document.getElementById('panel-'+i).style.display='block';"
-        "var t=document.querySelectorAll('.cat');"
-        "for(var k=0;k<t.length;k++)t[k].classList.remove('active');"
-        "t[i].classList.add('active');"
-        "t[i].scrollIntoView({block:'nearest',inline:'center'});"
-        "window.scrollTo(0,0);"
-        "}\n"
-        "function showRegion(r){"
-        "var g=document.querySelectorAll('.news-group');"
-        "for(var k=0;k<g.length;k++){"
-        "g[k].style.display=g[k].classList.contains(r)?'block':'none';"
-        "}"
-        "var b=document.querySelectorAll('.region');"
-        "for(var k=0;k<b.length;k++)b[k].classList.remove('active');"
-        "document.querySelector('.region-'+r).classList.add('active');"
-        "}\n"
-        "</script>\n"
-        "</body>\n</html>"
+        f'<p class="masthead-meta">{html.escape(today)} · 更新 {updated} · {n}类 · '
+        f'国内{dom_total}条 · 国外{for_total}条{meta_label}</p>\n'
+        f'{region_bar}\n'
+        '</header>'
     )
+    nav = f'<nav class="{nav_class}" role="tablist" aria-label="新闻分类">' + "".join(tab_btns) + '</nav>'
+    main = '<main id="main" tabindex="-1">\n' + _render_panels(today, categories_data, pc) + '\n</main>'
+    footer = (
+        '<footer>每日 06:00 自动更新 · 点标题跳转原文 · '
+        f'<a href="{archive_href}">{archive_label}</a></footer>'
+    )
+    body_inner = header + "\n" + nav + "\n" + main
+    if pc:
+        body_inner = '<div class="wrap">\n' + body_inner + '\n</div>'
+
+    return (
+        head
+        + '<body id="top">\n'
+        + '<a class="skip-link" href="#main">跳到正文</a>\n'
+        + body_inner + "\n"
+        + footer + "\n"
+        + '<button type="button" id="toTop" class="to-top" aria-label="回到顶部" hidden>↑</button>\n'
+        + '<script>\n' + _PAGE_JS + '</script>\n'
+        + '</body>\n</html>'
+    )
+
+
+def build_html(today: str, categories_data: list) -> str:
+    """移动端页面:刊头 + 国内/国外切换 + sticky 分类导航 + 发丝线分隔的条目流。"""
+    return _render_page(today, categories_data, pc=False)
 
 
 def build_html_pc(today: str, categories_data: list) -> str:
-    """PC 版宽屏页面:分类 tab 切换 + 国内/国外切换,报纸风 serif 排版。
-
-    与移动版 build_html 共用 _render_news_item / _render_news_group,仅布局与交互不同:
-    sticky 分类 tab 横向导航,顶部「国内/国外」全局切换;单分类单列居中阅读(约 860px),
-    发丝线分隔条目,点标题跳原文。切换分类时保持当前国内/国外选择。
-    """
-    dom_total = sum(len(c["domestic"]) for c in categories_data)
-    for_total = sum(len(c["foreign"]) for c in categories_data)
-    n = len(categories_data)
-
-    tab_btns = []
-    for i, cat in enumerate(categories_data):
-        name = html.escape(short_cat(cat["category"]))
-        cls = "tab-btn active" if i == 0 else "tab-btn"
-        tab_btns.append(
-            f'<button type="button" class="{cls}" onclick="showTab({i})">{name}</button>'
-        )
-
-    region_bar = (
-        '<div class="region-bar">\n'
-        '<button type="button" class="region-btn domestic active" '
-        'onclick="showRegion(\'domestic\')">国内</button>\n'
-        '<button type="button" class="region-btn foreign" '
-        'onclick="showRegion(\'foreign\')">国外</button>\n'
-        '</div>'
-    )
-
-    panels = []
-    for i, cat in enumerate(categories_data):
-        pstyle = "" if i == 0 else ' style="display:none"'
-        title = html.escape(short_cat(cat["category"]))
-        d = len(cat["domestic"])
-        f = len(cat["foreign"])
-        body = (
-            _render_news_group(cat["domestic"], "domestic", is_default=True)
-            + "\n"
-            + _render_news_group(cat["foreign"], "foreign", is_default=False)
-        )
-        panels.append(
-            f'<section class="panel" id="pc-panel-{i}"{pstyle}>\n'
-            f'<div class="panel-head">\n'
-            f'<h2 class="panel-title">{title}</h2>\n'
-            f'<p class="panel-count">国内 {d} · 国外 {f}</p>\n'
-            f'</div>\n'
-            f'{body}\n'
-            f'</section>'
-        )
-
-    return (
-        '<!doctype html>\n<html lang="zh-CN">\n<head>\n'
-        '<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>每日新闻摘要(PC版) {html.escape(today)}</title>\n"
-        "<style>\n" + _CSS_PC + "\n</style>\n"
-        "</head>\n<body>\n"
-        '<div class="wrap">\n'
-        '<header class="masthead">\n'
-        '<h1 class="masthead-title">每日新闻摘要</h1>\n'
-        f'<p class="masthead-meta">{html.escape(today)} · {n}类 · 国内{dom_total}条 · 国外{for_total}条 · PC版</p>\n'
-        f"{region_bar}\n"
-        "</header>\n"
-        '<nav class="tabs">' + "".join(tab_btns) + "</nav>\n"
-        '<main>\n' + "\n".join(panels) + "\n</main>\n"
-        "</div>\n"
-        '<footer>每日更新 · 点标题可跳转原文 · 顶部切换国内/国外 · 分类 tab 切换主题</footer>\n'
-        '<script>\n'
-        "function showTab(i){"
-        "var p=document.querySelectorAll('.panel');"
-        "for(var k=0;k<p.length;k++)p[k].style.display='none';"
-        "document.getElementById('pc-panel-'+i).style.display='block';"
-        "var t=document.querySelectorAll('.tab-btn');"
-        "for(var k=0;k<t.length;k++)t[k].classList.remove('active');"
-        "t[i].classList.add('active');"
-        "t[i].scrollIntoView({block:'nearest',inline:'center'});"
-        "window.scrollTo(0,0);"
-        "}\n"
-        "function showRegion(r){"
-        "var g=document.querySelectorAll('.news-group');"
-        "for(var k=0;k<g.length;k++){"
-        "g[k].style.display=g[k].classList.contains(r)?'block':'none';"
-        "}"
-        "var b=document.querySelectorAll('.region-btn');"
-        "for(var k=0;k<b.length;k++)b[k].classList.remove('active');"
-        "document.querySelector('.region-btn.'+r).classList.add('active');"
-        "}\n"
-        "</script>\n"
-        "</body>\n</html>"
-    )
+    """PC 宽屏页面:报纸风 serif 排版,分类 tab + 国内/国外切换,单列居中阅读。"""
+    return _render_page(today, categories_data, pc=True)
 
 
 def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
@@ -685,15 +1020,17 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
                 continue
             lines += [f"### {cat['category']}", ""]
             for idx, it in enumerate(items):
-                # 转义 markdown 链接文本里的特殊字符,避免 ] 或 \ 提前闭合 [text](url)
-                t = _clip(it["title"]).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+                # 转义 markdown 链接文本里的特殊字符,避免 ] 或 \ 提前闭合 [text](url);
+                # 显示标题剥掉发布时间戳前缀(过滤/排序时保留作日期线索)
+                t = _clip(_strip_title_prefix(it["title"])).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
                 if it["url"]:
                     # URL 用尖括号包裹,容忍 URL 内含 ) 等特殊字符(Wiki 类链接常见)
                     lines.append(f"> [{t}](<{it['url']}>)")
                 else:
                     lines.append(f"> {t}")
-                if it["snippet"]:
-                    lines.append(f"> {it['snippet']}")
+                snip = _clean_snippet(it.get("snippet", ""), _strip_title_prefix(it.get("title", "")))
+                if snip:
+                    lines.append(f"> {snip}")
                 # 引用块内条目间空行(单独的 > 行),微信渲染为同一竖线区块内的间隔
                 if idx < len(items) - 1:
                     lines.append(">")
@@ -704,48 +1041,111 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
     return f"每日新闻摘要 {today}", md
 
 
+def _expand_queries(today: str) -> list:
+    """按“分类 × 国内/国外”展开查询词,顺序与 CATEGORIES 严格对应。"""
+    queries = []
+    for _, q_dom, q_for in CATEGORIES:
+        queries.append(f"{q_dom} {today}")
+        queries.append(f"{q_for} {today}")
+    return queries
+
+
+def _fallback_search(query: str, max_results: int, today: str) -> list:
+    """主查询为空时兜底:去掉日期再搜一次,尽量别让分类开天窗。"""
+    try:
+        body = search(query.replace(f" {today}", ""), max_results=max_results)
+        return parse_results(body) if body else []
+    except Exception as e:
+        sys.stderr.write(f"[兜底失败] {query}: {e}\n")
+        return []
+
+
+def _topup(items: list, seen: dict, today: str, max_days: int,
+           q_base: str, max_results: int, top_n: int,
+           interval: float = 0.0) -> list:
+    """过滤后不足 top_n 时,用原始措辞(无日期)补搜一轮,合并去重。
+
+    anysearch 单次最多返回 10 条,无法靠提高 max_results 超过 10;
+    故用「去日期换措辞」补搜一次,拿额外候选。seen 与主流程共享,
+    clean_items 内部基于 seen 去重,所以两次过滤结果相加不会重复。
+    interval>0 时在补搜前 sleep,避免与主 batch 或前后补搜连发触发限流。
+    返回未排序的合并列表(调用方负责 sort_items_recent + 截断)。
+    """
+    if len(items) >= top_n:
+        return items
+    if interval > 0:
+        time.sleep(interval)
+    extra_raw = _fallback_search(q_base, max_results, today)
+    if not extra_raw:
+        return items
+    extra = clean_items(extra_raw, today, seen=seen, max_days=max_days)
+    if not extra:
+        return items
+    return items + extra
+
+
 def fetch_all() -> tuple:
-    """抓取所有分类(每类国内 + 国外),返回 (today, categories_data)。"""
+    """抓取所有分类(每类国内 + 国外),返回 (today, categories_data)。
+
+    18 条查询按每 5 条一批走 batch_search,4 次请求即可完成;
+    单批失败自动降级逐条,某条查询解析为空时再去掉日期兜底重搜一次。
+    """
     today = beijing_date()
-    max_results = int(os.environ.get("MAX_RESULTS", "10"))
+    max_results = _env_num("MAX_RESULTS", 10, int, 1, 10)
     # 旧闻 cutoff 天数:默认 7(宁可少而精),可用 MAX_DAYS 放宽到 30 等
-    max_days = int(os.environ.get("MAX_DAYS", "7"))
+    max_days = _env_num("MAX_DAYS", 7, int, 1, 365)
+    # batch 批次之间的间隔(秒):避免触发 anysearch 限流
+    search_interval = _env_num("SEARCH_INTERVAL", 1.0, float, 0.0, 60.0)
+    # 每个地域(国内/国外)最终展示条数:过滤+排序后截断到 top_n
+    top_n = _env_num("TOP_N", 10, int, 1, 30)
+
+    queries = _expand_queries(today)
+    refresh = os.environ.get("REFRESH", "").strip() not in ("", "0", "false", "False")
+    bodies = [] if refresh else _load_raw_cache(today, queries)
+    if bodies:
+        sys.stderr.write(f"[缓存] 命中当天原始结果 {_cache_file(today)},跳过抓取\n")
+    else:
+        sys.stderr.write(
+            f"[抓取] {len(CATEGORIES)} 类 / {len(queries)} 条查询,batch 模式(每批 5 条)...\n"
+        )
+        bodies = search_many(queries, max_results=max_results, interval=search_interval)
+        _save_raw_cache(today, queries, bodies)
 
     categories_data = []
-    # 每次搜索间隔(秒):anysearch 连续高频请求会被限流,加间隔避免后半段返回空
-    search_interval = float(os.environ.get("SEARCH_INTERVAL", "3"))
-    for title, q_dom, q_for in CATEGORIES:
-        sys.stderr.write(f"[抓取] {title} 国内 ...\n")
-        try:
-            dom_body = search(f"{q_dom} {today}", max_results=max_results)
-        except Exception as e:
-            dom_body = ""
-            sys.stderr.write(f"[失败] {title} 国内: {e}\n")
-        time.sleep(search_interval)
-        sys.stderr.write(f"[抓取] {title} 国外 ...\n")
-        try:
-            for_body = search(f"{q_for} {today}", max_results=max_results)
-        except Exception as e:
-            for_body = ""
-            sys.stderr.write(f"[失败] {title} 国外: {e}\n")
-        time.sleep(search_interval)
-        dom_raw = parse_results(dom_body) if dom_body else []
-        fore_raw = parse_results(for_body) if for_body else []
+    for idx, (title, q_dom, q_for) in enumerate(CATEGORIES):
+        dom_raw = parse_results(bodies[idx * 2]) if bodies[idx * 2] else []
+        fore_raw = parse_results(bodies[idx * 2 + 1]) if bodies[idx * 2 + 1] else []
+        # 空窗兜底:主查询无结果时去掉日期重搜(结果仍会过旧闻/杂质过滤)
+        if not dom_raw:
+            sys.stderr.write(f"[兜底] {title} 国内 ...\n")
+            dom_raw = _fallback_search(q_dom, max_results, today)
+        if not fore_raw:
+            sys.stderr.write(f"[兜底] {title} 国外 ...\n")
+            fore_raw = _fallback_search(q_for, max_results, today)
+
         sys.stderr.write(f"[解析] {title}: 国内raw{len(dom_raw)} 国外raw{len(fore_raw)}\n")
         seen = {"url": set(), "title": set()}  # 国内+国外共享,同分类内不重复
         dom = clean_items(dom_raw, today, seen=seen, max_days=max_days)
         fore = clean_items(fore_raw, today, seen=seen, max_days=max_days)
         sys.stderr.write(f"[过滤] {title}: 国内{len(dom)} 国外{len(fore)}\n")
+        # 不足 top_n 时补搜一轮(去日期措辞),尽量凑满;anysearch 单次上限 10,只能靠补搜补量
+        if len(dom) < top_n:
+            before = len(dom)
+            dom = _topup(dom, seen, today, max_days, q_dom, max_results, top_n, interval=search_interval)
+            sys.stderr.write(f"[补搜] {title} 国内 {before}→{len(dom)}\n")
+        if len(fore) < top_n:
+            before = len(fore)
+            fore = _topup(fore, seen, today, max_days, q_for, max_results, top_n, interval=search_interval)
+            sys.stderr.write(f"[补搜] {title} 国外 {before}→{len(fore)}\n")
         categories_data.append({
             "category": title,
-            "domestic": dom,
-            "foreign": fore,
+            "domestic": sort_items_recent(dom, today)[:top_n],
+            "foreign": sort_items_recent(fore, today)[:top_n],
         })
 
-    # 全分类按发布日期降序(最新在前),让 index/digest/微信消息统一呈现最新内容
-    for cat in categories_data:
-        cat["domestic"] = sort_items_recent(cat["domestic"], today)
-        cat["foreign"] = sort_items_recent(cat["foreign"], today)
+    total_d = sum(len(c["domestic"]) for c in categories_data)
+    total_f = sum(len(c["foreign"]) for c in categories_data)
+    sys.stderr.write(f"[汇总] 国内{total_d}条 · 国外{total_f}条\n")
     return today, categories_data
 
 
@@ -781,13 +1181,11 @@ def main():
 
     os.makedirs(OUT_DIR, exist_ok=True)
     out_path = os.path.join(OUT_DIR, "index.html")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(build_html(today, categories_data))
+    _write_text_atomic(out_path, build_html(today, categories_data))
     sys.stderr.write(f"[生成] {out_path}\n")
     # PC 版宽屏页面,文件名含日期,便于按日归档(移动版 index.html 仍作 Pages 首页)
     pc_path = os.path.join(OUT_DIR, f"digest-{today}.html")
-    with open(pc_path, "w", encoding="utf-8") as f:
-        f.write(build_html_pc(today, categories_data))
+    _write_text_atomic(pc_path, build_html_pc(today, categories_data))
     sys.stderr.write(f"[生成] {pc_path} (PC版)\n")
 
     page_url = os.environ.get("PAGES_BASE_URL", "").strip()
