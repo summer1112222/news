@@ -237,7 +237,8 @@ def _parse_date(s: str) -> str:
 def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -> list:
     """后处理过滤:去首页/导航页/视频站/裸URL标题/旧闻,按 URL+标题去重。
 
-    seen 传入则跨分类共享去重(同一新闻不在多个分类重复出现)。
+    seen 传入则跨分类共享去重(同一新闻不在多个分类重复出现);
+    调用方在分类内传同一 seen 即可做到该分类国内+国外不重复。
     无任何日期线索的条目视为时效不明,保留(不误杀当天新闻)。
     """
     if seen is None:
@@ -472,9 +473,11 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
                 continue
             lines.append(f"### {cat['category']}")
             for it in items:
-                t = _clip(it["title"])
+                # 转义 markdown 链接文本里的特殊字符,避免 ] 或 \ 提前闭合 [text](url)
+                t = _clip(it["title"]).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
                 if it["url"]:
-                    lines.append(f"[{t}]({it['url']})")
+                    # URL 用尖括号包裹,容忍 URL 内含 ) 等特殊字符(Wiki 类链接常见)
+                    lines.append(f"[{t}](<{it['url']}>)")
                 else:
                     lines.append(t)
                 if it["snippet"]:
@@ -524,13 +527,19 @@ def push_serverchan(title: str, md: str) -> dict:
     key = os.environ.get("SERVERCHAN_SENDKEY", "").strip()
     if not key:
         raise SystemExit("❌ 未设置环境变量 SERVERCHAN_SENDKEY")
+    # 诊断:只打印长度和前缀布尔,不泄露密钥(GitHub 会给真实值打码)
+    sys.stderr.write(f"[推送] key 长度={len(key)} SCT前缀={key.startswith('SCT')}\n")
     url = f"https://sctapi.ftqq.com/{key}.send"
-    sys.stderr.write(f"[推送] POST {url}\n")
+    # 日志里对 key 打码,避免本地跑推送时密钥落到终端
+    sys.stderr.write(f"[推送] POST https://sctapi.ftqq.com/{key[:3]}***.send\n")
     resp = requests.post(url, data={"title": title, "desp": md}, timeout=60)
     if not resp.ok:
         sys.stderr.write(f"[推送失败] HTTP {resp.status_code} 响应体: {resp.text[:1000]}\n")
         resp.raise_for_status()
-    j = resp.json()
+    try:
+        j = resp.json()
+    except ValueError:
+        raise SystemExit(f"❌ Server酱返回非 JSON: {resp.text[:500]}")
     if j.get("code") not in (0, None):
         raise SystemExit(f"❌ Server酱返回错误: {j}")
     return j
