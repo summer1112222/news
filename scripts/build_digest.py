@@ -47,11 +47,13 @@ from anysearch_search import search, search_many  # noqa: E402
 # 用"最新"提时效,避免用"头条新闻"这类词(它反而把网站首页/导航页顶上来);
 # 地域类主题(江浙沪皖/上海/南通)的"国外"用涉外/国际视角的搜索词
 CATEGORIES = [
-    ("📰 时政新闻", "最新 时政 要闻", "国际 时政 要闻"),
-    ("📚 教育新闻", "最新 教育 新闻", "国际 教育 新闻"),
-    ("🌐 全球科技", "国内 最新 科技 新闻", "全球 最新 科技 新闻"),
-    ("💰 财经新闻", "最新 财经 股市", "国际 最新 财经 股市"),
-    ("🏥 全球医疗", "国内 最新 医疗 健康", "全球 最新 医疗 健康"),
+    # 全球类模块的「国外」用英文检索:中文搜国际新闻常被栏目页/旧闻占据,
+    # 英文词更容易命中当日外媒单篇报道(实测可拿到当天/前一天的最新稿件)
+    ("📰 时政新闻", "最新 时政 要闻", "world politics news"),
+    ("📚 教育新闻", "最新 教育 新闻", "international education news"),
+    ("🌐 全球科技", "国内 最新 科技 新闻", "global technology news"),
+    ("💰 财经新闻", "最新 财经 股市", "global markets business news"),
+    ("🏥 全球医疗", "国内 最新 医疗 健康", "global health news"),
     ("🏙 江浙沪皖", "江苏 浙江 上海 安徽 最新 新闻", "江苏 浙江 上海 安徽 国际 涉外"),
     ("🌆 上海发展", "上海 最新 发展 新闻", "上海 国际 涉外 新闻"),
     ("🏖 南通发展", "南通 最新 发展 新闻", "南通 国际 涉外 新闻"),
@@ -115,6 +117,34 @@ def _save_raw_cache(today: str, queries: list, bodies: list) -> None:
         _write_text_atomic(_cache_file(today), json.dumps(payload, ensure_ascii=False))
     except OSError as e:
         sys.stderr.write(f"[缓存] 写入失败(忽略): {e}\n")
+
+
+def _final_cache_file(today: str) -> str:
+    return os.path.join(CACHE_DIR, f"final-{today}.json")
+
+
+def _load_final_cache(today: str):
+    """读取当天「已完成过滤/排序/补搜」的成品数据,命中则免去全部网络请求。"""
+    try:
+        with open(_final_cache_file(today), encoding="utf-8") as f:
+            data = json.load(f)
+        cats = data.get("categories")
+        if isinstance(cats, list) and cats and all(
+            isinstance(c, dict) and {"category", "domestic", "foreign"} <= set(c)
+            for c in cats
+        ):
+            return cats
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _save_final_cache(today: str, categories_data: list) -> None:
+    try:
+        payload = {"categories": categories_data, "saved_at": int(time.time())}
+        _write_text_atomic(_final_cache_file(today), json.dumps(payload, ensure_ascii=False))
+    except OSError as e:
+        sys.stderr.write(f"[缓存] 成品写入失败(忽略): {e}\n")
 
 # tab 页样式(纯字符串,避免 f-string 与 CSS 花括号冲突)
 _CSS = """
@@ -391,7 +421,12 @@ _NAV_TITLE_HINTS = ("首页", "导航", "主页", "官网", "网站地图", "全
                     "State of Kids", "State of Families", "Cornerstone", "International Import Expo",
                     # 中文栏目页残留:概況/国际会议列表/外事日程/数据发布/经贸新闻/图片频道
                     "概況", "国际会议", "外事日程", "数据发布", "经贸新闻", "图片频道", "公寓式酒店",
-                    "新闻直播", "招生录取", "Newsroom", "时政快报")
+                    "新闻直播", "招生录取", "Newsroom", "时政快报",
+                    # 聚合索引/日报/资讯周报/小时报/封面报道等栏目页
+                    "所有关于", "产业日报", "热点速递", "资讯周报", "要闻速览",
+                    "小时报", "封面报道", "企业专辑", "享誉",
+                    # 英文聚合页/周刊「版次」页
+                    "News Headlines", " Edition")
 
 # 标题(去空格后)完全等于这些通用词的,是栏目名不是单条新闻
 _GENERIC_TITLES = {
@@ -403,6 +438,7 @@ _GENERIC_TITLES = {
     "上海", "南通", "经贸新闻", "数据发布", "外事日程", "国际会议", "Findings",
     # 栏目页/频道名:“新闻发布”(商务部发布栏)、“News”(英文栏目页)
     "新闻发布", "News",
+    "国际要闻", "国内要闻", "最新封面报道", "国际财经与时政要闻",
 }
 
 # 栏目_站点/机构 页:前半是通用栏目或地名,后半是机构/政府/媒体站点
@@ -416,6 +452,26 @@ _MEDIA_PREFIXES = ("视频丨", "微视频", "视频：", "【视频】", "欢�
 
 # 家庭教育服务机构的营销自夸文(师资/团队/服务/口碑),不是新闻;
 # 这些词在真正育儿新闻标题里几乎不出现,单独命中即可安全过滤
+# 英文结果里的聚合/栏目/活动/报告页:latest news、News Headlines、Department of、
+# Conference/Summit/Expo/Outlook、含“|”的频道页。只对英文标题生效,避免误伤中文。
+_EN_NAV_RE = re.compile(
+    r"\b(latest|breaking)\b.*\bnews\b|\bnews\s*headlines?\b|"
+    r"\b(department|ministry)\s+of\b|\bnewsroom\b|\bsubscribe\b|\|",
+    re.I,
+)
+_EN_EVENT_RE = re.compile(
+    r"\b(conference|summit|expo|forum|outlook|webinar|symposium|"
+    r"week\s+20\d{2}|20\d{2}\s*[|–-])\b",
+    re.I,
+)
+
+
+def _is_english_title(title: str) -> bool:
+    letters = len(re.findall(r"[A-Za-z]", title))
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", title))
+    return letters >= 6 and letters > cjk
+
+
 _PROMO_TITLE_HINTS = ("师资团队", "持证上岗", "复荐率", "硬核专业", "高口碑", "铸就",
                       "辅导效果", "家长反馈", "全解析", "避坑", "合规厂家")
 
@@ -604,6 +660,13 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
         # 标题就是通用栏目名(国际新闻/早报/热点新闻 等)
         if re.sub(r"\s+", "", title) in _GENERIC_TITLES:
             continue
+        # 「国际要闻| 大纪元」之类:左半边是栏目名,右半边是站点,整行是栏目页
+        mb = re.match(r"^(.{1,10})\s*[|｜]\s*\S+$", title)
+        if mb and re.sub(r"\s+", "", mb.group(1)) in _GENERIC_TITLES:
+            continue
+        # 连载片段标题(之一：/之二：…),脱离上下文无意义
+        if re.match(r"^之[一二三四五六七八九十]+[：:]", title):
+            continue
         # [午夜新闻]时政要闻 这类:括号内是栏目名,去掉括号后剩的也是栏目词
         mb = re.match(r"^[\[【][^】\]]*[】\]]\s*(.*)$", title)
         if mb and (not mb.group(1) or re.sub(r"\s+", "", mb.group(1)) in _GENERIC_TITLES):
@@ -651,7 +714,7 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
                     pass
         # 去重(分类内 + 跨分类共享)
         key_url = url.rstrip("/")
-        key_title = re.sub(r"\s+", "", title)
+        key_title = _dedupe_title_key(title)
         if key_url and key_url in seen["url"]:
             continue
         if key_title and key_title in seen["title"]:
@@ -693,8 +756,15 @@ _TITLE_PREFIX_RE = re.compile(
 
 
 def _strip_title_prefix(title: str) -> str:
-    """剥掉标题开头的发布时间戳前缀,用于显示。"""
-    return _TITLE_PREFIX_RE.sub("", title.strip()).strip()
+    """剥掉显示用的标题噪音:开头时间戳、栏目名前缀、尾部日期。
+
+    过滤与排序仍用原始标题(时间戳是旧闻判断的日期线索),只有展示时清洗,
+    这样既不会漏判旧闻,用户也看不到「时政要闻 … 2026-11-03」这类脏标题。
+    """
+    s = _TITLE_PREFIX_RE.sub("", title.strip()).strip()
+    s = _COLUMN_PREFIX_RE.sub("", s)
+    s = _TRAILING_DATE_RE.sub("", s).strip()
+    return s or title.strip()
 
 
 def sort_items_recent(items: list, today: str) -> list:
@@ -1084,6 +1154,27 @@ def _topup(items: list, seen: dict, today: str, max_days: int,
     return items + extra
 
 
+def _filter_tiered(raw, seen, today, top_n, max_days_cap,
+                   q_base, max_results, interval):
+    """动态窗口过滤:先近 2 天,不足逐级放宽到 7 天、max_days_cap,仍不足才补搜。
+
+    优先展示最新——旧闻只在 raw 里近 2 天/7 天都不够 top_n 时才出现。
+    各级 clean_items 共享 seen(已加入的不会重复),结果累加,调用方负责 sort+截断。
+    """
+    tiers = [t for t in sorted({2, 7, max_days_cap}) if t <= max_days_cap] or [max_days_cap]
+    items = []
+    for tier in tiers:
+        items += clean_items(raw, today, seen=seen, max_days=tier)
+        if len(items) >= top_n:
+            break
+    else:
+        # 各级都不足 top_n:补搜兜底(去日期措辞,max_days_cap 窗口)
+        before = len(items)
+        items = _topup(items, seen, today, max_days_cap, q_base, max_results, top_n, interval)
+        sys.stderr.write(f"[补搜] {q_base[:14]} {before}→{len(items)}\n")
+    return items
+
+
 def fetch_all() -> tuple:
     """抓取所有分类(每类国内 + 国外),返回 (today, categories_data)。
 
@@ -1091,6 +1182,18 @@ def fetch_all() -> tuple:
     单批失败自动降级逐条,某条查询解析为空时再去掉日期兜底重搜一次。
     """
     today = beijing_date()
+    refresh = os.environ.get("REFRESH", "").strip() not in ("", "0", "false", "False")
+    # 成品缓存优先:同一天重复渲染(改样式/改前端)零网络、零抖动
+    if not refresh:
+        cached = _load_final_cache(today)
+        if cached:
+            total_d = sum(len(c["domestic"]) for c in cached)
+            total_f = sum(len(c["foreign"]) for c in cached)
+            sys.stderr.write(
+                f"[缓存] 命中当天成品 {_final_cache_file(today)},直接复用"
+                f"(国内{total_d} · 国外{total_f});REFRESH=1 可重抓\n"
+            )
+            return today, cached
     max_results = _env_num("MAX_RESULTS", 10, int, 1, 10)
     # 旧闻 cutoff 天数:默认 7(宁可少而精),可用 MAX_DAYS 放宽到 30 等
     max_days = _env_num("MAX_DAYS", 7, int, 1, 365)
@@ -1100,7 +1203,6 @@ def fetch_all() -> tuple:
     top_n = _env_num("TOP_N", 10, int, 1, 30)
 
     queries = _expand_queries(today)
-    refresh = os.environ.get("REFRESH", "").strip() not in ("", "0", "false", "False")
     bodies = [] if refresh else _load_raw_cache(today, queries)
     if bodies:
         sys.stderr.write(f"[缓存] 命中当天原始结果 {_cache_file(today)},跳过抓取\n")
@@ -1125,18 +1227,10 @@ def fetch_all() -> tuple:
 
         sys.stderr.write(f"[解析] {title}: 国内raw{len(dom_raw)} 国外raw{len(fore_raw)}\n")
         seen = {"url": set(), "title": set()}  # 国内+国外共享,同分类内不重复
-        dom = clean_items(dom_raw, today, seen=seen, max_days=max_days)
-        fore = clean_items(fore_raw, today, seen=seen, max_days=max_days)
-        sys.stderr.write(f"[过滤] {title}: 国内{len(dom)} 国外{len(fore)}\n")
-        # 不足 top_n 时补搜一轮(去日期措辞),尽量凑满;anysearch 单次上限 10,只能靠补搜补量
-        if len(dom) < top_n:
-            before = len(dom)
-            dom = _topup(dom, seen, today, max_days, q_dom, max_results, top_n, interval=search_interval)
-            sys.stderr.write(f"[补搜] {title} 国内 {before}→{len(dom)}\n")
-        if len(fore) < top_n:
-            before = len(fore)
-            fore = _topup(fore, seen, today, max_days, q_for, max_results, top_n, interval=search_interval)
-            sys.stderr.write(f"[补搜] {title} 国外 {before}→{len(fore)}\n")
+        # 动态窗口:先近2天,不足逐级放宽到7天、max_days,仍不足才补搜——优先展示最新
+        dom = _filter_tiered(dom_raw, seen, today, top_n, max_days, q_dom, max_results, search_interval)
+        fore = _filter_tiered(fore_raw, seen, today, top_n, max_days, q_for, max_results, search_interval)
+        sys.stderr.write(f"[窗口] {title}: 国内{len(dom)} 国外{len(fore)}\n")
         categories_data.append({
             "category": title,
             "domestic": sort_items_recent(dom, today)[:top_n],
@@ -1146,7 +1240,14 @@ def fetch_all() -> tuple:
     total_d = sum(len(c["domestic"]) for c in categories_data)
     total_f = sum(len(c["foreign"]) for c in categories_data)
     sys.stderr.write(f"[汇总] 国内{total_d}条 · 国外{total_f}条\n")
+    if total_d + total_f:
+        _save_final_cache(today, categories_data)
     return today, categories_data
+
+
+def _total_items(categories_data: list) -> int:
+    return sum(len(c.get("domestic", [])) + len(c.get("foreign", []))
+               for c in categories_data)
 
 
 def push_serverchan(title: str, md: str) -> dict:
@@ -1178,6 +1279,12 @@ def push_serverchan(title: str, md: str) -> dict:
 
 def main():
     today, categories_data = fetch_all()
+    if _total_items(categories_data) == 0:
+        # 全空多半是限流/额度用尽:保留上一次的页面与缓存,不用空页覆盖
+        raise SystemExit(
+            "❌ 全部模块抓取为空(疑似 anysearch 限流/额度用尽),"
+            "已保留原有页面不覆盖;请设置 ANYSEARCH_API_KEY 或稍后重试"
+        )
 
     os.makedirs(OUT_DIR, exist_ok=True)
     out_path = os.path.join(OUT_DIR, "index.html")

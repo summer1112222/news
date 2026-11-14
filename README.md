@@ -75,12 +75,20 @@ python -m http.server -d public
 ```
 设了 `PAGES_BASE_URL` 才会推微信;不设只生成 HTML。
 
+### 当天缓存(改样式时免重抓)
+首次跑完会把原始结果与成品分别写到 `.cache/raw-<日期>.json` 和 `.cache/final-<日期>.json`:
+
+- 同一天再次运行会**直接复用成品**,几秒内重渲染,不再请求 anysearch;
+- 想强制重新抓取最新新闻:`$env:REFRESH='1'`;
+- 只改了过滤/排序等后端逻辑、想在不联网的情况下重滤缓存数据时,可删掉 `final-<日期>.json` 保留 `raw-<日期>.json` 后再跑。
+
 ## 关键文件
 | 文件 | 作用 |
 |------|------|
 | `scripts/anysearch_search.py` | 精简 anysearch 客户端(JSON-RPC → Markdown) |
 | `scripts/build_digest.py` | 抓取 → 生成 tab 页 HTML → 推送 的主编排脚本 |
 | `.github/workflows/daily-push.yml` | GitHub Actions 定时任务 + Pages 部署 |
+| `.cache/`(本地) | 当天原始/成品缓存,`REFRESH=1` 强制重抓 |
 
 ## 调整
 - **改分类/搜索词**:编辑 `scripts/build_digest.py` 的 `CATEGORIES` 列表

@@ -35,6 +35,7 @@ jobs:
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           MAX_RESULTS: '5'
           MAX_DAYS: '30'           # 旧闻 cutoff 放宽到 30 天,避免分类国内空窗
+          TOP_N: '10'              # 每类每地域最终展示 10 条
           SEARCH_INTERVAL: '3'     # 每次搜索间隔 3 秒,避免 anysearch 限流
         run: python scripts/build_digest.py
 

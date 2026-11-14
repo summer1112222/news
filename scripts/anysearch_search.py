@@ -79,7 +79,14 @@ def _call(tool_name: str, arguments: dict) -> str:
             data = resp.json()
             if "error" in data:
                 raise AnySearchError(f"API 错误: {data['error']}")
-            return _extract_text(data)
+            text = _extract_text(data)
+            # 匿名额度用尽时,接口会返回“自动生成 API key”的说明而非搜索结果;
+            # 显式报错,避免上层把它当成 0 条结果静默写出空页面。
+            if "automatically generated" in text and "api_key=" in text:
+                raise AnySearchError(
+                    "anysearch 匿名额度已用尽,请设置 ANYSEARCH_API_KEY 后重试"
+                )
+            return text
         except (requests.RequestException, ValueError, AnySearchError) as e:
             last_error = e
             # 参数/鉴权错误重试也无用,直接抛出
