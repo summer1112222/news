@@ -34,6 +34,8 @@ jobs:
           ANYSEARCH_API_KEY: ${{ secrets.ANYSEARCH_API_KEY }}
           PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
           MAX_RESULTS: '5'
+          MAX_DAYS: '30'           # 旧闻 cutoff 放宽到 30 天,避免分类国内空窗
+          SEARCH_INTERVAL: '3'     # 每次搜索间隔 3 秒,避免 anysearch 限流
         run: python scripts/build_digest.py
 
       - name: 上传 Pages 产物
