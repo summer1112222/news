@@ -29,6 +29,8 @@ import json
 import time
 import datetime
 from urllib.parse import urlparse
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 
 import requests
 
@@ -62,6 +64,17 @@ CATEGORIES = [
     ("🏖 南通发展", "南通 本地宝 南通发布 最新 新闻", "南通 国际 涉外 新闻"),
     ("👨‍👩‍👧 培养孩子", "上海 南通 家庭教育 育儿 儿童健康 最新 新闻 父母必读", "parenting child development family policy news"),  # 国内限上海/南通本地育儿新闻;国外用英文搜真实国际育儿(中文搜国外只剩联合国专题页/政府公告)
 ]
+
+# 中国新闻网官方 RSS:实时当天、标准 RSS 2.0、不反爬、本地+Actions 均可达。
+# 仅覆盖国内侧 4 类(科技/地域/育儿无对应官方 RSS,仍走 anysearch);
+# 国外侧不变(anysearch 英文检索已验证能拿当天外媒)。
+# RSS 失败时自动回退到该分类的 anysearch 国内查询 + 兜底。
+RSS_FEEDS_DOMESTIC = {
+    "📰 时政新闻": "https://www.chinanews.com.cn/rss/china.xml",
+    "📚 教育新闻": "https://www.chinanews.com.cn/rss/edu.xml",
+    "💰 财经新闻": "https://www.chinanews.com.cn/rss/finance.xml",
+    "🏥 全球医疗": "https://www.chinanews.com.cn/rss/jk.xml",
+}
 
 # HTML 输出目录(GitHub Pages 产物根)
 OUT_DIR = "public"
@@ -400,6 +413,62 @@ def parse_results(md_text: str) -> list:
     return items
 
 
+def _parse_rss_date(pub: str) -> str:
+    """RFC822 'Sun, 15 Nov 2026 08:19:22 +0800' → 'YYYY-MM-DD',失败返回 ''。
+
+    RSS pubDate 是 RFC822 格式,_parse_all_dates 不支持;RSS item 单独存 date 字段,
+    pub_date/clean_items 优先用它判日期,无需从 url/title/snippet 提。
+    """
+    try:
+        dt = parsedate_to_datetime(pub)
+        return dt.strftime("%Y-%m-%d")
+    except (TypeError, ValueError, AttributeError):
+        return ""
+
+
+def parse_rss(xml_text: str) -> list:
+    """解析 RSS 2.0 XML → [{title, url, source, snippet, date}]。
+
+    item 结构与 parse_results 一致(复用 clean_items/sort/pub_date),额外带 date 字段
+    (pubDate 解析的 YYYY-MM-DD)。description 先去 HTML 标签再 _clean_snippet 压成导语;
+    title 不在此裁剪(显示时由 _render_news_item 统一 _clip)。
+    """
+    items = []
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        link = (it.findtext("link") or "").strip()
+        if not title or not link:
+            continue
+        desc = it.findtext("description") or ""
+        desc = re.sub(r"<[^>]+>", "", desc)          # 去 HTML 标签
+        pub = it.findtext("pubDate") or ""
+        items.append({
+            "title": title,
+            "url": link,
+            "source": domain_source(link),
+            "snippet": _clean_snippet(desc, title=title, limit=150),
+            "date": _parse_rss_date(pub),
+        })
+    return items
+
+
+def fetch_rss(url: str, timeout: int = 20) -> list:
+    """抓取一个 RSS feed → item 列表(失败返回 [],调用方回退 anysearch)。"""
+    try:
+        resp = requests.get(url, timeout=timeout,
+                            headers={"User-Agent": "news-digest/1.0"})
+        resp.raise_for_status()
+        resp.encoding = resp.apparent_encoding or "utf-8"
+        return parse_rss(resp.text)
+    except Exception as e:
+        sys.stderr.write(f"[RSS失败] {url}: {type(e).__name__}\n")
+        return []
+
+
 # 视频站 / 社交平台 / 聚合首页 —— 抓到的几乎不是单条新闻,整域排除
 _JUNK_HOSTS = {
     "youtube.com", "youtu.be",
@@ -615,7 +684,14 @@ def _parse_all_dates(s: str, today_year: str = "") -> list:
 
 
 def pub_date(it: dict, today: str) -> str:
-    """条目可考的最新发布日期(<= 今天),没有则返回空串。"""
+    """条目可考的最新发布日期(<= 今天),没有则返回空串。
+
+    优先用 item 自带的 date 字段(RSS item 由 _parse_rss_date 填,权威当天日期);
+    无 date(anysearch item)才从 url+title+snippet 提(_parse_all_dates 不认 RFC822)。
+    """
+    d = it.get("date", "")
+    if d:
+        return d if (not today or d <= today) else ""
     blob = " ".join((it.get("url", ""), it.get("title", ""), it.get("snippet", "")))
     dates = _parse_all_dates(blob, today[:4] if today else "")
     past = [d for d in dates if today and d <= today]
@@ -704,20 +780,30 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
         # 栏目/频道首页(站点根、index.html、短字母路径、/topics/ 话题聚合页)
         if _is_section_page(url):
             continue
-        # 旧闻:日期从 URL、标题、摘要里提(anysearch 不返回 date 字段,
-        # 凤凰大风号等站的发布日期常只在摘要里,只看 URL+标题会漏旧闻)
+        # 旧闻:RSS item 优先用自带 date 字段(权威,无需从文本提);无 date 的 anysearch
+        # item 从 URL+标题+摘要提(凤凰大风号等发布日期常只在摘要里,只看 URL+标题会漏)
         snippet = it.get("snippet", "")
         if cutoff:
-            # 发布日期取文本里 <= 今天的最大日期:标题可能含未来事件日
-            # (如“2027年1月1日起施行”),取未来日期会误判为非旧闻而漏过过滤
-            dates = _parse_all_dates(url + " " + title + " " + snippet, today_year)
-            past = [d for d in dates if d <= today]
-            if past:
+            d = it.get("date", "")
+            if d and d <= today:
+                # 有权威 date 且未过期:直接用它判旧闻,跳过 _parse_all_dates
                 try:
-                    if datetime.datetime.strptime(max(past), "%Y-%m-%d").date() < cutoff:
+                    if datetime.datetime.strptime(d, "%Y-%m-%d").date() < cutoff:
                         continue
-                except Exception:
+                except ValueError:
                     pass
+                # date 在 cutoff 内:非旧闻,落到去重段
+            else:
+                # 无 date:发布日期取文本里 <= 今天的最大日期(标题可能含未来事件日
+                # 如 2027年1月1日起施行,取未来日期会误判为非旧闻而漏过过滤)
+                dates = _parse_all_dates(url + " " + title + " " + snippet, today_year)
+                past = [d for d in dates if d <= today]
+                if past:
+                    try:
+                        if datetime.datetime.strptime(max(past), "%Y-%m-%d").date() < cutoff:
+                            continue
+                    except Exception:
+                        pass
         # 去重(分类内 + 跨分类共享)
         key_url = url.rstrip("/")
         key_title = _dedupe_title_key(title)
@@ -1118,12 +1204,17 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
 
 
 def _expand_queries(today: str) -> list:
-    """按“分类 × 国内/国外”展开查询词,顺序与 CATEGORIES 严格对应。"""
-    queries = []
-    for _, q_dom, q_for in CATEGORIES:
-        queries.append(f"{q_dom} {today}")
-        queries.append(f"{q_for} {today}")
-    return queries
+    """展开查询任务 → [(cat_idx, region, query)],跳过有 RSS 国内源的分类。
+
+    有 RSS_FEEDS_DOMESTIC 的分类国内侧走 RSS 直抓,不查 anysearch(省请求、缓解限流);
+    国外侧仍全展开。返回 tasks 而非扁平 queries,fetch_all 按 cat_idx 聚合 raw。
+    """
+    tasks = []
+    for i, (title, q_dom, q_for) in enumerate(CATEGORIES):
+        if title not in RSS_FEEDS_DOMESTIC:
+            tasks.append((i, "dom", f"{q_dom} {today}"))
+        tasks.append((i, "for", f"{q_for} {today}"))
+    return tasks
 
 
 def _fallback_search(query: str, max_results: int, today: str) -> list:
@@ -1208,25 +1299,41 @@ def fetch_all() -> tuple:
     # 每个地域(国内/国外)最终展示条数:过滤+排序后截断到 top_n
     top_n = _env_num("TOP_N", 10, int, 1, 30)
 
-    queries = _expand_queries(today)
+    tasks = _expand_queries(today)
+    queries = [t[2] for t in tasks]
     bodies = [] if refresh else _load_raw_cache(today, queries)
     if bodies:
         sys.stderr.write(f"[缓存] 命中当天原始结果 {_cache_file(today)},跳过抓取\n")
     else:
         sys.stderr.write(
-            f"[抓取] {len(CATEGORIES)} 类 / {len(queries)} 条查询,batch 模式(每批 5 条)...\n"
+            f"[抓取] {len(CATEGORIES)} 类 / {len(queries)} 条查询"
+            f"({len(RSS_FEEDS_DOMESTIC)} 类国内走 RSS),batch 模式(每批 5 条)...\n"
         )
         bodies = search_many(queries, max_results=max_results, interval=search_interval)
         _save_raw_cache(today, queries, bodies)
 
+    # 按 (cat_idx, region) 聚合 anysearch raw:RSS 分类的国内 raw 不在此(走 RSS 直抓)
+    raw_by_cat = {}
+    for (cat_idx, region, _), body in zip(tasks, bodies):
+        parsed = parse_results(body) if body else []
+        raw_by_cat.setdefault(cat_idx, {"dom": [], "for": []})[region] = parsed
+
     categories_data = []
     for idx, (title, q_dom, q_for) in enumerate(CATEGORIES):
-        dom_raw = parse_results(bodies[idx * 2]) if bodies[idx * 2] else []
-        fore_raw = parse_results(bodies[idx * 2 + 1]) if bodies[idx * 2 + 1] else []
-        # 空窗兜底:主查询无结果时去掉日期重搜(结果仍会过旧闻/杂质过滤)
+        # 国内:RSS 优先(实时当天),失败/空才回退该分类 anysearch raw,再空才兜底
+        rss_url = RSS_FEEDS_DOMESTIC.get(title)
+        dom_raw = []
+        if rss_url:
+            dom_raw = fetch_rss(rss_url)
+            if dom_raw:
+                sys.stderr.write(f"[RSS] {title} 国内 {len(dom_raw)}条\n")
         if not dom_raw:
-            sys.stderr.write(f"[兜底] {title} 国内 ...\n")
-            dom_raw = _fallback_search(q_dom, max_results, today)
+            dom_raw = raw_by_cat.get(idx, {}).get("dom", [])
+            if not dom_raw:
+                sys.stderr.write(f"[兜底] {title} 国内 ...\n")
+                dom_raw = _fallback_search(q_dom, max_results, today)
+        # 国外:仍 anysearch(raw_by_cat 已按 task 聚合)+ 兜底
+        fore_raw = raw_by_cat.get(idx, {}).get("for", [])
         if not fore_raw:
             sys.stderr.write(f"[兜底] {title} 国外 ...\n")
             fore_raw = _fallback_search(q_for, max_results, today)
