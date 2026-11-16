@@ -51,7 +51,7 @@ gh workflow run "每日新闻推送" --ref main
 
 ### CI(.github/workflows/daily-push.yml)
 
-cron UTC 22:02(北京 06:02),装依赖 → 跑 build_digest.py(注入 secrets 与 MAX_RESULTS=10/MAX_DAYS=30/TOP_N=10/SEARCH_INTERVAL=3)→ 部署 `./public` 到 GitHub Pages。Secrets:`SERVERCHAN_SENDKEY`、`PAGES_BASE_URL`、`ANYSEARCH_API_KEY`(可选)。
+cron UTC 17:02(北京次日 01:02),装依赖 → 跑 build_digest.py(注入 secrets 与 MAX_RESULTS=10/MAX_DAYS=30/TOP_N=10/SEARCH_INTERVAL=3)→ 部署 `./public` 到 GitHub Pages。Secrets:`SERVERCHAN_SENDKEY`、`PAGES_BASE_URL`、`ANYSEARCH_API_KEY`(可选)。
 
 ## 关键约定与陷阱
 

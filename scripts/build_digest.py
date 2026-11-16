@@ -17,7 +17,7 @@
   PAGES_BASE_URL       可选,页面部署地址(如 https://user.github.io/news)
                       设了才推送微信;不设只本地生成 HTML 供预览
 
-调度:GitHub Actions cron '2 22 * * *'(UTC 22:02 = 北京 06:02)
+调度:GitHub Actions cron '2 17 * * *'(UTC 17:02 = 北京次日 01:02)
 本地测试:python scripts/build_digest.py  → 生成 public/index.html
 """
 import os
