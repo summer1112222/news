@@ -1,0 +1,39 @@
+<block wx:if="{{!selected}}">
+  <view class="day-list">
+    <view class="day-row" wx:for="{{days}}" wx:key="date"
+          data-date="{{item.date}}" bindtap="pickDay">
+      <text class="day-date">{{item.date}}</text>
+      <text class="day-total">共{{item.total}}条</text>
+    </view>
+    <view class="empty" wx:if="{{!days.length}}">暂无历史数据,从明天起逐日累积。</view>
+  </view>
+</block>
+
+<block wx:else>
+  <view class="day-head">
+    <view class="back" bindtap="backToList">‹ 日期列表</view>
+    <view class="day-title">{{selected}}</view>
+  </view>
+
+  <view wx:if="{{missing}}" class="empty">该日数据不完整。</view>
+
+  <block wx:else>
+    <view class="regions">
+      <view class="region {{region === 'domestic' ? 'active' : ''}}" data-r="domestic" bindtap="switchRegion">国内</view>
+      <view class="region {{region === 'foreign' ? 'active' : ''}}" data-r="foreign" bindtap="switchRegion">国外</view>
+    </view>
+
+    <scroll-view class="cats" scroll-x scroll-into-view="{{scrollInto}}" scroll-with-animation>
+      <view class="cat {{catIdx === index ? 'active' : ''}}" wx:for="{{tabs}}" wx:key="index"
+            id="tab-{{index}}" data-i="{{index}}" bindtap="switchCat">{{item}}</view>
+    </scroll-view>
+
+    <view class="body">
+      <view class="panel-head">
+        <view class="panel-title">{{tabs[catIdx]}}</view>
+        <view class="panel-count">国内 {{curDom}} · 国外 {{curFor}}</view>
+      </view>
+      <news-list items="{{items}}" />
+    </view>
+  </block>
+</block>

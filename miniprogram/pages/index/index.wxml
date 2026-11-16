@@ -1,6 +1,6 @@
 <view class="masthead">
   <view class="masthead-title">每日新闻摘要</view>
-  <view class="masthead-meta">{{date}} · 更新 {{generatedAt}} · 国内{{domTotal}}条 · 国外{{forTotal}}条</view>
+  <view class="masthead-meta">{{date}} · 更新 {{generatedAt}} · 国内{{domTotal}}条 · 国外{{forTotal}}条 · <navigator url="/packageHistory/pages/history/history" class="history-link">历史</navigator></view>
   <view class="regions">
     <view class="region {{region === 'domestic' ? 'active' : ''}}" data-r="domestic" bindtap="switchRegion">国内</view>
     <view class="region {{region === 'foreign' ? 'active' : ''}}" data-r="foreign" bindtap="switchRegion">国外</view>

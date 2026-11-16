@@ -2,6 +2,14 @@
   "pages": [
     "pages/index/index"
   ],
+  "subPackages": [
+    {
+      "root": "packageHistory",
+      "pages": [
+        "pages/history/history"
+      ]
+    }
+  ],
   "window": {
     "navigationBarTitleText": "每日新闻摘要",
     "navigationBarBackgroundColor": "@navBgColor",
