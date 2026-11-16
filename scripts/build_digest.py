@@ -1204,7 +1204,7 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
     nav = f'<nav class="{nav_class}" role="tablist" aria-label="新闻分类">' + "".join(tab_btns) + '</nav>'
     main = '<main id="main" tabindex="-1">\n' + _render_panels(today, categories_data, pc) + '\n</main>'
     footer = (
-        '<footer>每日 06:00 自动更新 · 点标题跳转原文 · '
+        '<footer>每日 01:00 自动更新 · 点标题跳转原文 · '
         f'<a href="{archive_href}">{archive_label}</a></footer>'
     )
     body_inner = header + "\n" + nav + "\n" + main
@@ -1300,7 +1300,11 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
                 lines.append(f"> ……其余 {rest} 条见今日页面")
             lines.append("")  # 分类之间仅空行,不堆分割线
 
-    lines += ["---", "", f"[📰 查看今日全部新闻]({url})"]
+    lines += [
+        "---", "",
+        f"[📰 查看今日全部新闻]({url})",
+        f"[💻 电脑宽屏版]({page_url.rstrip('/')}/digest-{today}.html)",
+    ]
     md = "\n".join(lines)
     # 体积日志:desp 超限报 HTTP 400(30001),提前打印字节数便于诊断
     sys.stderr.write(f"[微信消息] desp {len(md.encode('utf-8'))} bytes\n")
