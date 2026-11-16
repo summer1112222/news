@@ -14,7 +14,7 @@ GitHub Actions (cron 06:02 北京)
       → 解析成 标题/网址/摘要
       → 生成 public/index.html         (9 分类 tab 页,标题做超链接)
       → 部署到 GitHub Pages            (每天覆盖同一 URL)
-      → Server酱 API                   (推瘦身消息:链接 + 5 条预告到微信)
+      → Server酱 API                   (推瘦身消息:链接 + 每类每地域预览3条到微信)
 ```
 
 微信里收到的是一句话 + 链接 + 今日提要;点链接打开网页看全部 9 类。

@@ -28,7 +28,7 @@ import html
 import json
 import time
 import datetime
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 
@@ -58,22 +58,39 @@ CATEGORIES = [
     ("📚 教育新闻", "最新 教育 政策 新闻", "国际 教育 新闻"),  # 教育权威平台名(中国教育报/澎湃教育)偏栏目页,实测改用「政策」措辞出单条(教师法/教育局回应/北师大发布),无小时报混入
     ("🌐 全球科技", "国内 最新 科技 新闻 36氪 虎嗅", "全球 最新 科技 新闻"),
     ("💰 财经新闻", "最新 财经 股市 第一财经 财新", "国际 最新 财经 股市"),
-    ("🏥 全球医疗", "国内 最新 医疗 健康 健康报 丁香园", "全球 最新 医疗 健康"),
+    ("🏥 全球医疗", "国内 最新 医疗 健康 新闻", "全球 最新 医疗 健康"),  # 兜底词不带平台名(健康报/丁香园):实测会搜出官网/百科词条等无日期非新闻页
     ("🏙 江浙沪皖", "江苏 浙江 上海 安徽 最新 新闻 本地宝", "江苏 浙江 上海 安徽 国际 涉外"),
     ("🌆 上海发展", "上海 本地宝 上海发布 最新 新闻", "上海 国际 涉外 新闻"),
     ("🏖 南通发展", "南通 本地宝 南通发布 最新 新闻", "南通 国际 涉外 新闻"),
-    ("👨‍👩‍👧 培养孩子", "上海 南通 家庭教育 育儿 儿童健康 最新 新闻 父母必读", "parenting child development family policy news"),  # 国内限上海/南通本地育儿新闻;国外用英文搜真实国际育儿(中文搜国外只剩联合国专题页/政府公告)
+    ("👨‍👩‍👧 培养孩子", "最新 育儿 家庭教育 儿童健康 新闻 父母必读", "parenting child development family policy news"),  # 国内改全国育儿(gnews RSS 主源,anysearch 词仅兜底;旧的地域限定因 anysearch 索引滞后已弃);国外用英文搜真实国际育儿(中文搜国外只剩联合国专题页/政府公告)
 ]
 
-# 中国新闻网官方 RSS:实时当天、标准 RSS 2.0、不反爬、本地+Actions 均可达。
-# 仅覆盖国内侧 4 类(科技/地域/育儿无对应官方 RSS,仍走 anysearch);
-# 国外侧不变(anysearch 英文检索已验证能拿当天外媒)。
-# RSS 失败时自动回退到该分类的 anysearch 国内查询 + 兜底。
-RSS_FEEDS_DOMESTIC = {
-    "📰 时政新闻": "https://www.chinanews.com.cn/rss/china.xml",
-    "📚 教育新闻": "https://www.chinanews.com.cn/rss/edu.xml",
-    "💰 财经新闻": "https://www.chinanews.com.cn/rss/finance.xml",
-    "🏥 全球医疗": "https://www.chinanews.com.cn/rss/jk.xml",
+# RSS 源(双侧):9 类全面 RSS 化,anysearch 降级为纯 fallback(某侧 feeds 为空或全部抓取失败才走)。
+# - 中国新闻网官方 RSS:实时当天、标准 RSS 2.0、不反爬、本地+Actions 均可达(时政/教育/财经国内侧)。
+#   注意:jk.xml(健康频道)已停更(2026-03-06 之后无新条目,2026-11-16 实测),医疗国内改走 gnews 中文 feed。
+# - Google News RSS 搜索 feed:实时当天、带 <source> 标签(真实发布站名);美国 IP 可达 = Actions 可用,
+#   本地被墙 fetch_rss 失败返回 [] 自动回退,不影响本地跑。
+#   条目链接是 news.google.com/rss/articles/... 跳转链,国内无代理点击打不开(标题/摘要/日期/来源不受影响),
+#   解码真实原文 URL 留作后续可选。
+def _gnews(q: str, zh: bool = False) -> str:
+    if zh:
+        return "https://news.google.com/rss/search?q=" + quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+    return "https://news.google.com/rss/search?q=" + quote(q) + "&hl=en-US&gl=US&ceid=US:en"
+
+
+# 每分类 {"dom": [...], "for": [...]};某侧列表为空 = 该侧仍走 anysearch(旧查询词)。
+# 培养孩子国内侧按用户决策改全国育儿新闻(anysearch 时代限上海/南通是因为地域词搜不出,现在拿当天优先)。
+RSS_FEEDS = {
+    "📰 时政新闻": {"dom": ["https://www.chinanews.com.cn/rss/china.xml"], "for": [_gnews("world politics")]},
+    "📚 教育新闻": {"dom": ["https://www.chinanews.com.cn/rss/edu.xml"], "for": [_gnews("education policy")]},
+    "🌐 全球科技": {"dom": [_gnews("科技", zh=True)], "for": [_gnews("technology news")]},
+    "💰 财经新闻": {"dom": ["https://www.chinanews.com.cn/rss/finance.xml"], "for": [_gnews("finance stock markets")]},
+    "🏥 全球医疗": {"dom": [_gnews("医疗 OR 健康", zh=True)], "for": [_gnews("global health")]},
+    "🏙 江浙沪皖": {"dom": [_gnews("江苏", zh=True), _gnews("浙江", zh=True), _gnews("安徽", zh=True)],
+                  "for": [_gnews("Jiangsu OR Zhejiang OR Anhui")]},
+    "🌆 上海发展": {"dom": [_gnews("上海", zh=True)], "for": [_gnews("Shanghai")]},
+    "🏖 南通发展": {"dom": [_gnews("南通", zh=True)], "for": [_gnews("Nantong")]},
+    "👨‍👩‍👧 培养孩子": {"dom": [_gnews("育儿 OR 家庭教育", zh=True)], "for": [_gnews("parenting child development")]},
 }
 
 # HTML 输出目录(GitHub Pages 产物根)
@@ -446,10 +463,16 @@ def parse_rss(xml_text: str) -> list:
         desc = it.findtext("description") or ""
         desc = re.sub(r"<[^>]+>", "", desc)          # 去 HTML 标签
         pub = it.findtext("pubDate") or ""
+        # Google News RSS 每个 item 带 <source url="...">发布站名</source>,
+        # 用站名作 source(比 domain_source(link) 得到的 "Google News" 有用);
+        # gnews 的 title 尾部习惯带 " - {站名}",恰好等于站名时剥掉。
+        src_name = (it.findtext("source") or "").strip()
+        if src_name:
+            title = re.sub(r"\s+-\s+" + re.escape(src_name) + r"$", "", title)
         items.append({
             "title": title,
             "url": link,
-            "source": domain_source(link),
+            "source": src_name or domain_source(link),
             "snippet": _clean_snippet(desc, title=title, limit=150),
             "date": _parse_rss_date(pub),
         })
@@ -478,8 +501,46 @@ _JUNK_HOSTS = {
     "weibo.com",
     "x.com", "twitter.com",
     "instagram.com",
-    "news.google.com",
+    # 百科/导航站:永远是词条/目录页,不是新闻(医疗兜底实测渗入「丁香园」词条、「医疗保健」栏目)
+    "baike.baidu.com", "265.com",
 }
+
+# 英文栏目名标题(用于无日期条目收紧):如 "Politics & Diplomacy"、
+# "World Politics, Diplomacy and Trade"(cnbc/atlanticcouncil 栏目页)。
+# 判据见 _is_en_column_name:真实英文新闻标题多为普通大小写、含数字或动词句式;
+# 为避免误杀 title-case 真标题,还要求命中 News/&/,/: 之一作为栏目标记。
+_EN_COLUMN_STOPWORDS = {"and", "of", "the", "for", "in", "on", "to"}
+
+# 无日期英文条目的资源/导览页开头词(仅 undated 时生效,不误伤带日期真新闻)
+_EN_RESOURCE_PREFIXES = ("Knowledge of", "Understanding", "Introduction", "Overview",
+                         "Guide to", "Resources", "About ", "Basics of", "Tips",
+                         "Facts about", "What is", "How to")
+
+
+def _is_en_column_name(title: str) -> bool:
+    """英文栏目名判断:全首字母大写名词短语、无数字、词数 2-9、且含栏目标记。
+
+    连接小词(and/of/the/for/in/on/to)与 &、逗号、冒号视为分隔符。
+    要求含 News/&/,/: 之一:纯 title-case 短语(如 "Trump Signs Executive Order")
+    可能是真新闻标题,无标记时不敢只凭大小写判死。
+    """
+    t = title.strip()
+    if re.search(r"\d", t):
+        return False
+    words = [w.strip(",;:·") for w in t.split()]
+    if not (2 <= len(words) <= 12):
+        return False
+    has_marker = any(m in t for m in ("News", "&", ",", ":"))
+    if not has_marker:
+        return False
+    for w in words:
+        if not w:
+            return False
+        if w.lower() in _EN_COLUMN_STOPWORDS or w == "&":
+            continue
+        if not w[0].isupper() or not all(ch.isalpha() for ch in w[1:]):
+            return False
+    return True
 
 # 标题里出现这些词的多半是栏目首页/导航页/订阅页/常年专题页,不是单条新闻
 _NAV_TITLE_HINTS = ("首页", "导航", "主页", "官网", "网站地图", "全球資訊網",
@@ -545,7 +606,8 @@ def _is_english_title(title: str) -> bool:
 
 
 _PROMO_TITLE_HINTS = ("师资团队", "持证上岗", "复荐率", "硬核专业", "高口碑", "铸就",
-                      "辅导效果", "家长反馈", "全解析", "避坑", "合规厂家")
+                      "辅导效果", "家长反馈", "全解析", "避坑", "合规厂家",
+                      "成功代理")  # 律所自夸文(德恒成功代理…典型案例),非新闻
 
 # 通用栏目词后紧跟分隔符(_ - — · | [)的,是栏目页不是新闻(重要新闻_xxx / 时政要闻—xxx)
 _GENERIC_PREFIX_RE = re.compile(
@@ -703,7 +765,8 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
 
     seen 传入则跨分类共享去重(同一新闻不在多个分类重复出现);
     调用方在分类内传同一 seen 即可做到该分类国内+国外不重复。
-    无任何日期线索的条目视为时效不明,保留(不误杀当天新闻)。
+    无任何日期线索的条目视为时效不明:RSS 条目均带 date 字段不受影响;
+    时效不明且再命中栏目页特征的(anysearch 兜底渗入的百科/栏目/拼接页)会被收紧丢弃。
     """
     if seen is None:
         seen = {"url": set(), "title": set()}
@@ -777,12 +840,17 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
         host = _host_base(url)
         if host and any(host == h or host.endswith("." + h) for h in _JUNK_HOSTS):
             continue
+        # Google News:只放行 /rss/articles/ 文章跳转链(gnews RSS 条目);
+        # 其余 news.google.com 路径(首页/订阅页等)仍按聚合页拦
+        if host == "news.google.com" and not urlparse(url).path.startswith("/rss/articles/"):
+            continue
         # 栏目/频道首页(站点根、index.html、短字母路径、/topics/ 话题聚合页)
         if _is_section_page(url):
             continue
         # 旧闻:RSS item 优先用自带 date 字段(权威,无需从文本提);无 date 的 anysearch
         # item 从 URL+标题+摘要提(凤凰大风号等发布日期常只在摘要里,只看 URL+标题会漏)
         snippet = it.get("snippet", "")
+        undated = False
         if cutoff:
             d = it.get("date", "")
             if d and d <= today:
@@ -804,6 +872,27 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
                             continue
                     except Exception:
                         pass
+                else:
+                    undated = True
+            if undated:
+                # 无日期条目收紧:RSS 条目均带 date 字段不受影响,此规则主要拦
+                # anysearch 兜底里渗入的栏目页/拼接页(2026-11-16 实测 12 条)。
+                # 时效不明 + 非新闻特征 = 丢弃:
+                # - 英文栏目名:全首字母大写名词短语(如 "Politics & Diplomacy")
+                # - 中文标签拼接串:多个 | 分隔的「栏目|栏目|来源-媒体」页面标题
+                if _is_english_title(title):
+                    if _is_en_column_name(title):
+                        continue
+                    # 资源/导览页开头词:文档/课程/指南首页,非新闻(undated 兜底里常见)
+                    if title.startswith(_EN_RESOURCE_PREFIXES):
+                        continue
+                else:
+                    # 中文栏目频道/专题页:「高职高专(职业院校)招聘信息频道」
+                    if "频道" in title or title.endswith("专题"):
+                        continue
+                # 中文标签拼接串:多个 | 分隔的「栏目|栏目|来源-媒体」页面标题
+                if title.count("|") + title.count("｜") >= 2:
+                    continue
         # 去重(分类内 + 跨分类共享)
         key_url = url.rstrip("/")
         key_title = _dedupe_title_key(title)
@@ -1144,6 +1233,12 @@ def build_html_pc(today: str, categories_data: list) -> str:
     return _render_page(today, categories_data, pc=True)
 
 
+# 微信消息每类每地域仅预览前 N 条(标题+摘要),其余靠「查看今日全部新闻」链接兜底。
+# 全量推送(9类×2地域×10条含摘要,约160+条)会超 Server酱 desp 字段上限,
+# 报 HTTP 400 code=30001 "Data too long for column 'desp'"(2026-11-16 实测)。
+WECHAT_PREVIEW_N = 3
+
+
 def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
     """微信消息(A版,适配国内/国外):按地域分两大段,段内按分类分组。
 
@@ -1153,6 +1248,8 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
         条与条之间空行分隔,近似预览页发丝线分隔的层次感;
       - 每个分类之间一道分割线,避免一长串糊到底。
     [text](url) 在微信里显示为可点蓝字;URL 用尖括号包裹以容忍特殊字符。
+    每类每地域只预览 WECHAT_PREVIEW_N 条,超出部分以「其余 N 条见今日页面」提示,
+    回归 README 设计的「瘦身消息:链接 + 今日提要」。
     """
     dom_total = sum(len(c["domestic"]) for c in categories_data)
     for_total = sum(len(c["foreign"]) for c in categories_data)
@@ -1181,7 +1278,8 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
             if not items:
                 continue
             lines += [f"### {cat['category']}", ""]
-            for idx, it in enumerate(items):
+            shown = items[:WECHAT_PREVIEW_N]
+            for idx, it in enumerate(shown):
                 # 转义 markdown 链接文本里的特殊字符,避免 ] 或 \ 提前闭合 [text](url);
                 # 显示标题剥掉发布时间戳前缀(过滤/排序时保留作日期线索)
                 t = _clip(_strip_title_prefix(it["title"])).replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
@@ -1194,26 +1292,35 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
                 if snip:
                     lines.append(f"> {snip}")
                 # 引用块内条目间空行(单独的 > 行),微信渲染为同一竖线区块内的间隔
-                if idx < len(items) - 1:
+                if idx < len(shown) - 1:
                     lines.append(">")
+            # 预览之外的条数提示,引导点底部链接看全部
+            rest = len(items) - len(shown)
+            if rest > 0:
+                lines.append(f"> ……其余 {rest} 条见今日页面")
             lines.append("")  # 分类之间仅空行,不堆分割线
 
     lines += ["---", "", f"[📰 查看今日全部新闻]({url})"]
     md = "\n".join(lines)
+    # 体积日志:desp 超限报 HTTP 400(30001),提前打印字节数便于诊断
+    sys.stderr.write(f"[微信消息] desp {len(md.encode('utf-8'))} bytes\n")
     return f"每日新闻摘要 {today}", md
 
 
 def _expand_queries(today: str) -> list:
-    """展开查询任务 → [(cat_idx, region, query)],跳过有 RSS 国内源的分类。
+    """展开查询任务 → [(cat_idx, region, query)],跳过有 RSS 源的那一侧。
 
-    有 RSS_FEEDS_DOMESTIC 的分类国内侧走 RSS 直抓,不查 anysearch(省请求、缓解限流);
-    国外侧仍全展开。返回 tasks 而非扁平 queries,fetch_all 按 cat_idx 聚合 raw。
+    RSS_FEEDS 里该侧 feeds 非空的分类走 RSS 直抓,不查 anysearch;
+    9 类双侧全覆盖时 tasks 为空(零 anysearch 请求,限流问题消失),
+    仅某侧 feeds 为空或 RSS 全部抓取失败才需要对应查询兜底。
     """
     tasks = []
     for i, (title, q_dom, q_for) in enumerate(CATEGORIES):
-        if title not in RSS_FEEDS_DOMESTIC:
+        feeds = RSS_FEEDS.get(title, {})
+        if not feeds.get("dom"):
             tasks.append((i, "dom", f"{q_dom} {today}"))
-        tasks.append((i, "for", f"{q_for} {today}"))
+        if not feeds.get("for"):
+            tasks.append((i, "for", f"{q_for} {today}"))
     return tasks
 
 
@@ -1304,39 +1411,54 @@ def fetch_all() -> tuple:
     bodies = [] if refresh else _load_raw_cache(today, queries)
     if bodies:
         sys.stderr.write(f"[缓存] 命中当天原始结果 {_cache_file(today)},跳过抓取\n")
-    else:
+    elif queries:
+        rss_cats = sum(1 for t in CATEGORIES if RSS_FEEDS.get(t[0], {}).get("dom"))
         sys.stderr.write(
-            f"[抓取] {len(CATEGORIES)} 类 / {len(queries)} 条查询"
-            f"({len(RSS_FEEDS_DOMESTIC)} 类国内走 RSS),batch 模式(每批 5 条)...\n"
+            f"[抓取] {len(CATEGORIES)} 类 / {len(queries)} 条 anysearch 查询"
+            f"({rss_cats} 类国内走 RSS),batch 模式(每批 5 条)...\n"
         )
         bodies = search_many(queries, max_results=max_results, interval=search_interval)
         _save_raw_cache(today, queries, bodies)
+    else:
+        # 9 类双侧全部有 RSS feeds:零 anysearch 主查询,gnews+chinanews 直抓
+        gnews_feeds = sum(len(f.get("dom", [])) + len(f.get("for", [])) for f in RSS_FEEDS.values())
+        sys.stderr.write(
+            f"[抓取] {len(CATEGORIES)} 类全部走 RSS({gnews_feeds} 个 feed,含 Google News)...\n"
+        )
+        bodies = []
 
-    # 按 (cat_idx, region) 聚合 anysearch raw:RSS 分类的国内 raw 不在此(走 RSS 直抓)
+    # 按 (cat_idx, region) 聚合 anysearch raw(仅 feeds 为空的一侧才有查询;RSS 失败兜底用)
     raw_by_cat = {}
     for (cat_idx, region, _), body in zip(tasks, bodies):
         parsed = parse_results(body) if body else []
         raw_by_cat.setdefault(cat_idx, {"dom": [], "for": []})[region] = parsed
 
+    def _region_raw(idx: int, title: str, region: str, q_base: str) -> list:
+        """一侧的取数:该侧所有 RSS feed 逐个抓取合并;全失败/空才回退
+        anysearch raw(feeds 为空的一侧),再空才去日期兜底重搜。"""
+        feeds = RSS_FEEDS.get(title, {}).get(region) or []
+        items = []
+        for u in feeds:
+            got = fetch_rss(u)
+            if got:
+                short = u.rsplit("/", 1)[-1] if "chinanews" in u else "gnews:" + u.split("q=")[-1][:24]
+                sys.stderr.write(f"[RSS] {title} {'国内' if region == 'dom' else '国外'} {short} {len(got)}条\n")
+            items.extend(got)
+        if items:
+            return items
+        raw = raw_by_cat.get(idx, {}).get(region, [])
+        if raw:
+            return raw
+        # 兜底重搜(去日期措辞)——连发易触发限流,前 sleep
+        sys.stderr.write(f"[兜底] {title} {'国内' if region == 'dom' else '国外'} ...\n")
+        if search_interval > 0:
+            time.sleep(search_interval)
+        return _fallback_search(q_base, max_results, today)
+
     categories_data = []
     for idx, (title, q_dom, q_for) in enumerate(CATEGORIES):
-        # 国内:RSS 优先(实时当天),失败/空才回退该分类 anysearch raw,再空才兜底
-        rss_url = RSS_FEEDS_DOMESTIC.get(title)
-        dom_raw = []
-        if rss_url:
-            dom_raw = fetch_rss(rss_url)
-            if dom_raw:
-                sys.stderr.write(f"[RSS] {title} 国内 {len(dom_raw)}条\n")
-        if not dom_raw:
-            dom_raw = raw_by_cat.get(idx, {}).get("dom", [])
-            if not dom_raw:
-                sys.stderr.write(f"[兜底] {title} 国内 ...\n")
-                dom_raw = _fallback_search(q_dom, max_results, today)
-        # 国外:仍 anysearch(raw_by_cat 已按 task 聚合)+ 兜底
-        fore_raw = raw_by_cat.get(idx, {}).get("for", [])
-        if not fore_raw:
-            sys.stderr.write(f"[兜底] {title} 国外 ...\n")
-            fore_raw = _fallback_search(q_for, max_results, today)
+        dom_raw = _region_raw(idx, title, "dom", q_dom)
+        fore_raw = _region_raw(idx, title, "for", q_for)
 
         sys.stderr.write(f"[解析] {title}: 国内raw{len(dom_raw)} 国外raw{len(fore_raw)}\n")
         seen = {"url": set(), "title": set()}  # 国内+国外共享,同分类内不重复
