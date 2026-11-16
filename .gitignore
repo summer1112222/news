@@ -5,10 +5,8 @@ __pycache__/
 .venv/
 venv/
 
-# Node(docx 已从流水线移除,本地若有 node 产物不入库)
+# Node 依赖不入库;package.json/package-lock.json 需入库(CI npm ci 装精确版本)
 node_modules/
-package.json
-package-lock.json
 
 # HTML 产物(CI 部署到 Pages,不入库;本地生成仅供预览)
 public/

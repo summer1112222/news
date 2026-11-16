@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "每日新闻摘要小程序:仅用 miniprogram-ci 做每日 CI 上传体验版,无运行时依赖",
+  "devDependencies": {
+    "miniprogram-ci": "2.1.31"
+  }
+}
