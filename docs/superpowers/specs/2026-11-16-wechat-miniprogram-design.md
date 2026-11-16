@@ -56,6 +56,7 @@ GitHub Actions cron 01:02(现有)
      → .cache/final-<日期>.json(现有)
   → 新 scripts/build_mp_data.py
      读取 final-<日期>.json + 仓库内 miniprogram/data/history/(昨日滚动文件)
+     并把上一次打包的 data/today.js(现为"昨天")晋升进滚动池(历史累积机制)
      → 生成 miniprogram/data/today.js          (主包:仅当天)
      → 生成 miniprogram/packageHistory/data/history.js(分包:近 30 天)
      → 更新 miniprogram/data/index.js          (日期索引:各日分类计数,供历史页列表)
@@ -86,7 +87,8 @@ module.exports = {
 - 字段名用单字母缩体积;`url` 原样保留(复制链接用),gnews 跳转链也保留(有代理时可用)
 - 体积依据(2026-11-16 实测 `final-*.json` 76–108KB/天,字段压缩后约 60–90KB/天):
   主包 = 当天 + 代码 < 300KB;历史分包**按体积自适应**——从最新往旧逐日装,装到 ≈1.7MB 预算即止
-  (常态 25–30 天,数据偏胖的日子自动缩窗到 ~15 天,保底 14 天,永不触碰 2MB 分包上限)
+  (常态 25–30 天,数据偏胖的日子自动缩窗到 ~15 天,保底 14 天,永不触碰 2MB 分包上限;
+  终审裁决:MIN_DAYS 保底与 2MB 上限冲突时上限优先,从最旧天起裁,硬上限 1.95MB)
 
 ## 小程序端设计
 

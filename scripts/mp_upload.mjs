@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // 小程序上传脚本:把 miniprogram/ 打包上传为开发版本(体验版)。
-// 密钥经环境变量 MP_PRIVATE_KEY 传入(密钥文件全文),不落任何日志 —— 与 push_serverchan 同约定。
-// 用法:MP_APPID=wx**** MP_PRIVATE_KEY="$(cat private.key)" node scripts/mp_upload.mjs
+// 密钥经环境变量传入(密钥文件全文),不落任何日志 —— 与 push_serverchan 同约定。
+// 环境变量:MP_UPLOAD_PRIVATE_KEY(CI/官方名)或 MP_PRIVATE_KEY(本地别名,两者取一)
+// 用法:MP_APPID=wx**** MP_UPLOAD_PRIVATE_KEY="$(cat private.key)" node scripts/mp_upload.mjs
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,10 +12,10 @@ const require_ = createRequire(import.meta.url);
 const ci = require_('miniprogram-ci');
 
 const appid = (process.env.MP_APPID || '').trim();
-const privateKey = (process.env.MP_PRIVATE_KEY || '').trim();
+const privateKey = (process.env.MP_UPLOAD_PRIVATE_KEY || process.env.MP_PRIVATE_KEY || '').trim();
 
 if (!appid || !privateKey) {
-  console.error('❌ 未设置 MP_APPID / MP_PRIVATE_KEY 环境变量(AppID 与小程序代码上传密钥)');
+  console.error('❌ 未设置 MP_APPID / MP_UPLOAD_PRIVATE_KEY(或别名 MP_PRIVATE_KEY)环境变量');
   process.exit(1);
 }
 

@@ -30,8 +30,11 @@ from build_digest import (  # noqa: E402
 JS_PREFIX = "module.exports = "
 # 历史分包体积预算(字节):2MB 分包上限留 ~15% 余量
 BUDGET_BYTES = 1_700_000
-# 历史保底天数:即使超预算也至少保留(14 天 × ~90KB ≈ 1.3MB,仍在 2MB 内)
+# 历史保底天数:即使超预算也至少保留(常态数据下 14 天 ≈ 1.3MB,仍在预算内)
 MIN_DAYS = 14
+# 硬上限(字节):2MB 平台铁律,MIN_DAYS 保底只是尽力而为,超此值必须裁
+# (胖数据日 14 天可能 ≈2MB+,保底让位于上限,从最旧一天开始丢)
+HARD_CAP_BYTES = 1_950_000
 
 
 def compact_item(it: dict, today: str) -> dict:
@@ -69,11 +72,14 @@ def _compact_cats(final_cats: list, today: str) -> list:
 
 
 def build_pack(today: str, final_cats: list, prev_history: dict,
-               budget_bytes: int = BUDGET_BYTES, min_days: int = MIN_DAYS) -> dict:
+               budget_bytes: int = BUDGET_BYTES, min_days: int = MIN_DAYS,
+               hard_cap_bytes: int = HARD_CAP_BYTES) -> dict:
     """打包:当天进主包,历史按体积自适应裁窗。
 
     prev_history:{日期: {date, generatedAt, categories(已精简)}}——上一次打包的滚动文件,
     当天键(残留)会被剔除。返回 {today_js, index_js, history_js, kept_days(降序)}。
+    体积规则:装到 budget 即止;不足 min_days 继续装(保底);但 hard_cap(2MB 铁律)
+    优先于保底,超硬上限从最旧一天开始丢。
     """
     today_data = {
         "date": today,
@@ -85,6 +91,7 @@ def build_pack(today: str, final_cats: list, prev_history: dict,
     # 历史天:去当天、降序;从最新往旧装,超预算即止(不足 min_days 继续装)
     day_keys = sorted((k for k in prev_history if k != today), reverse=True)
     kept_days = []
+    incs = []
     total = 0
     for key in day_keys:
         inc = len(json.dumps({key: prev_history[key]}, ensure_ascii=False,
@@ -92,7 +99,14 @@ def build_pack(today: str, final_cats: list, prev_history: dict,
         if len(kept_days) >= min_days and total + inc > budget_bytes:
             break
         kept_days.append(key)
+        incs.append(inc)
         total += inc
+
+    # 硬上限优先于 MIN_DAYS 保底:保底是为了历史页不空,超 2MB 是上传必败,
+    # 两者冲突时丢最旧的天,直到进硬上限或只剩一天
+    while len(kept_days) > 1 and total > hard_cap_bytes:
+        kept_days.pop()
+        total -= incs.pop()
 
     history_obj = {k: prev_history[k] for k in kept_days}
     index_obj = [{
@@ -135,6 +149,25 @@ def load_history(path: str) -> dict:
     return out
 
 
+def _load_day(path: str):
+    """读单日对象的 .js(today.js 形态);缺失/损坏/结构异常返回 None。"""
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read().strip()
+    except OSError:
+        return None
+    if not (text.startswith(JS_PREFIX) and text.endswith(";")):
+        return None
+    try:
+        obj = json.loads(text[len(JS_PREFIX):-1])
+    except ValueError:
+        return None
+    if isinstance(obj, dict) and obj.get("date") \
+            and isinstance(obj.get("categories"), list):
+        return obj
+    return None
+
+
 def main(cache_dir: str = ".cache", mp_dir: str = "miniprogram") -> None:
     """读当天 final 缓存 + 现有滚动历史 → 写出三个数据文件。目录参数供测试注入。"""
     today = beijing_date()
@@ -153,6 +186,11 @@ def main(cache_dir: str = ".cache", mp_dir: str = "miniprogram") -> None:
 
     prev_history = load_history(
         os.path.join(mp_dir, "packageHistory", "data", "history.js"))
+    # 历史累积:上一次打包的 today.js 现在是“昨天”,必须晋升进滚动池——
+    # 否则当天数据只进主包,无人写回历史,history.js 永远为空
+    old_today = _load_day(os.path.join(mp_dir, "data", "today.js"))
+    if old_today and old_today["date"] != today:
+        prev_history.setdefault(old_today["date"], old_today)
     pack = build_pack(today, final_cats, prev_history)
 
     _write_text_atomic(os.path.join(mp_dir, "data", "today.js"), pack["today_js"])
