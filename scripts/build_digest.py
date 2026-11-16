@@ -62,7 +62,7 @@ CATEGORIES = [
     ("🏙 江浙沪皖", "江苏 浙江 上海 安徽 最新 新闻 本地宝", "江苏 浙江 上海 安徽 国际 涉外"),
     ("🌆 上海发展", "上海 本地宝 上海发布 最新 新闻", "上海 国际 涉外 新闻"),
     ("🏖 南通发展", "南通 本地宝 南通发布 最新 新闻", "南通 国际 涉外 新闻"),
-    ("👨‍👩‍👧 培养孩子", "最新 育儿 家庭教育 儿童健康 新闻 父母必读", "parenting child development family policy news"),  # 国内改全国育儿(gnews RSS 主源,anysearch 词仅兜底;旧的地域限定因 anysearch 索引滞后已弃);国外用英文搜真实国际育儿(中文搜国外只剩联合国专题页/政府公告)
+    ("👨‍👩‍👧 育儿新闻", "最新 育儿 家庭教育 儿童健康 新闻 父母必读", "parenting child development family policy news"),  # 国内改全国育儿(gnews RSS 主源,anysearch 词仅兜底;旧的地域限定因 anysearch 索引滞后已弃);国外用英文搜真实国际育儿(中文搜国外只剩联合国专题页/政府公告)
 ]
 
 # RSS 源(双侧):9 类全面 RSS 化,anysearch 降级为纯 fallback(某侧 feeds 为空或全部抓取失败才走)。
@@ -90,7 +90,7 @@ RSS_FEEDS = {
                   "for": [_gnews("Jiangsu OR Zhejiang OR Anhui")]},
     "🌆 上海发展": {"dom": [_gnews("上海", zh=True)], "for": [_gnews("Shanghai")]},
     "🏖 南通发展": {"dom": [_gnews("南通", zh=True)], "for": [_gnews("Nantong")]},
-    "👨‍👩‍👧 培养孩子": {"dom": [_gnews("育儿 OR 家庭教育", zh=True)], "for": [_gnews("parenting child development")]},
+    "👨‍👩‍👧 育儿新闻": {"dom": [_gnews("育儿 OR 家庭教育", zh=True)], "for": [_gnews("parenting child development")]},
 }
 
 # HTML 输出目录(GitHub Pages 产物根)
@@ -1171,7 +1171,7 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
     meta_label = " · PC版" if pc else ""
     desc = (
         f"每日新闻摘要 {today}:时政、教育、全球科技、财经、全球医疗、江浙沪皖、"
-        "上海、南通、培养孩子 9 类新闻,国内/国外双视角。"
+        "上海、南通、育儿 9 类新闻,国内/国外双视角。"
     )
 
     head = (

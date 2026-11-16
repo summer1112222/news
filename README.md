@@ -3,18 +3,21 @@
 每天 01:02 自动抓取 9 类新闻,生成一个带分类 tab 的网页部署到 GitHub Pages,再推一条带链接的瘦身消息到微信。点微信里的链接进网页,顶部 9 个分类标签切换,每条标题点开看原文。
 
 ## 抓取分类
-时政 · 教育 · 全球科技 · 财经 · 全球医疗 · 江浙沪皖 · 上海发展 · 南通发展 · 培养孩子(每类 5 条)
+时政 · 教育 · 全球科技 · 财经 · 全球医疗 · 江浙沪皖 · 上海发展 · 南通发展 · 育儿新闻(每类每地域 10 条)
 
 ## 架构
 
 ```
 GitHub Actions (cron 01:02 北京)
    → scripts/build_digest.py
-      → scripts/anysearch_search.py   (anysearch JSON-RPC 抓取)
-      → 解析成 标题/网址/摘要
-      → 生成 public/index.html         (9 分类 tab 页,标题做超链接)
-      → 部署到 GitHub Pages            (每天覆盖同一 URL)
-      → Server酱 API                   (推瘦身消息:链接 + 每类每地域预览3条到微信)
+      → RSS 直抓(主源:中国新闻网 RSS = 时政/教育/财经国内侧;
+                 Google News RSS = 其余国内侧 + 全部国外侧)
+      → scripts/anysearch_search.py   (anysearch JSON-RPC,仅 RSS 失败/为空时兜底)
+      → 过滤/去重/按日排序           (clean_items + 动态时间窗)
+      → 生成 public/index.html        (移动版,9 分类 tab 页,每天覆盖同一 URL)
+      → 生成 public/digest-日期.html  (PC 宽屏版,按日归档)
+      → 部署到 GitHub Pages
+      → Server酱 API                  (推瘦身消息:链接 + 每类每地域预览3条到微信,含 PC 版直达链接)
 ```
 
 微信里收到的是一句话 + 链接 + 今日提要;点链接打开网页看全部 9 类。
@@ -85,8 +88,9 @@ python -m http.server -d public
 ## 关键文件
 | 文件 | 作用 |
 |------|------|
-| `scripts/anysearch_search.py` | 精简 anysearch 客户端(JSON-RPC → Markdown) |
-| `scripts/build_digest.py` | 抓取 → 生成 tab 页 HTML → 推送 的主编排脚本 |
+| `scripts/build_digest.py` | 抓取 → 过滤 → 生成 HTML → 推送 的主编排脚本 |
+| `scripts/anysearch_search.py` | 精简 anysearch 客户端(JSON-RPC → Markdown),RSS 失败时兜底 |
+| `scripts/gen_pc_from_html.py` | 离线:从 index.html 重生成 PC 版(不抓取,改 PC 样式时用) |
 | `.github/workflows/daily-push.yml` | GitHub Actions 定时任务 + Pages 部署 |
 | `.cache/`(本地) | 当天原始/成品缓存,`REFRESH=1` 强制重抓 |
 
@@ -97,7 +101,7 @@ python -m http.server -d public
 - **改页面样式**:编辑 `scripts/build_digest.py` 里的 `_CSS`
 
 ## 注意事项
-- 页面每天覆盖同一 URL,不留历史。几天后点微信里旧消息的链接,看到的是当天内容而非那天的。需要每天永久留一份可改 `build_html` 输出按日期命名的页面。
+- 移动版 `index.html` 每天覆盖同一 URL,不留历史;PC 版 `digest-<日期>.html` 按日归档,微信消息里带直达链接。几天后点微信里旧消息的移动版链接,看到的是当天内容而非那天的——要看历史点 PC 版链接。
 - Server酱免费版每天 5 条;本任务 1 条/天,够用。需更多用 ServerChan Turbo 付费版。
-- anysearch 匿名访问有速率限制,建议配 `ANYSEARCH_API_KEY`。
-- 政府类站点正文常反爬;本流水线用 anysearch **搜索摘要**而非单页正文,稳定性更高。
+- anysearch 匿名访问有速率限制,建议配 `ANYSEARCH_API_KEY`(RSS 全通时几乎用不到它)。
+- 本地跑 Google News RSS 会因被墙失败,自动回退 anysearch,属正常现象;Actions(美国 IP)上才直连。
