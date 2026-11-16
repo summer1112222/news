@@ -1,0 +1,41 @@
+/* 单条新闻:发丝线分隔;色值/字体继承 app.wxss 的 page 变量 */
+.news {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.news:last-child {
+  border-bottom: 0;
+  padding-bottom: 2px;
+}
+.news-title {
+  display: block;
+  font-family: var(--serif);
+  font-size: 16.5px;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.42;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.news-meta {
+  margin-top: 4px;
+  font-family: var(--serif);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  letter-spacing: 0.4px;
+}
+.news-snippet {
+  display: block;
+  margin-top: 6px;
+  font-size: 13.5px;
+  color: var(--ink-2);
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.empty {
+  padding: 18px 0;
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--ink-2);
+}

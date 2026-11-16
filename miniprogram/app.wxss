@@ -1,0 +1,25 @@
+/* 全局样式:色板/字体沿用 H5 版报纸衬线风,深浅色跟随系统。
+   色值变量定义在 page 选择器上,各组件/页面经 var() 复用。 */
+page {
+  --bg: #F9F7F2;
+  --ink: #1A1A1A;
+  --ink-2: #6B6660;
+  --rule: #E3DED2;
+  --accent: #8B2A2A;
+  --serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --sans: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.7;
+}
+@media (prefers-color-scheme: dark) {
+  page {
+    --bg: #16140F;
+    --ink: #EDE8DD;
+    --ink-2: #9A948A;
+    --rule: #2E2A22;
+    --accent: #C75656;
+  }
+}

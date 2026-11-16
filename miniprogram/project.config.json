@@ -1,0 +1,10 @@
+{
+  "appid": "touristappid",
+  "compileType": "miniprogram",
+  "projectname": "news-digest",
+  "libVersion": "latest",
+  "setting": {
+    "es6": true,
+    "minified": true
+  }
+}

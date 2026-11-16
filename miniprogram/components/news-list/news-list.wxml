@@ -1,0 +1,12 @@
+<view wx:if="{{!items.length}}" class="empty">此类暂无更新。</view>
+<block wx:for="{{items}}" wx:key="index">
+  <view class="news" data-u="{{item.u}}" bindtap="onTap">
+    <text class="news-title">{{item.t}}</text>
+    <view class="news-meta" wx:if="{{item.s || item.d}}">
+      <text wx:if="{{item.s}}">{{item.s}}</text>
+      <text wx:if="{{item.s && item.d}}"> · </text>
+      <text wx:if="{{item.d}}">{{item.d}}</text>
+    </view>
+    <text class="news-snippet" wx:if="{{item.n}}">{{item.n}}</text>
+  </view>
+</block>

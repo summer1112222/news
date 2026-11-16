@@ -1,0 +1,23 @@
+<view class="masthead">
+  <view class="masthead-title">每日新闻摘要</view>
+  <view class="masthead-meta">{{date}} · 更新 {{generatedAt}} · 国内{{domTotal}}条 · 国外{{forTotal}}条</view>
+  <view class="regions">
+    <view class="region {{region === 'domestic' ? 'active' : ''}}" data-r="domestic" bindtap="switchRegion">国内</view>
+    <view class="region {{region === 'foreign' ? 'active' : ''}}" data-r="foreign" bindtap="switchRegion">国外</view>
+  </view>
+</view>
+
+<scroll-view class="cats" scroll-x scroll-into-view="{{scrollInto}}" scroll-with-animation>
+  <view class="cat {{catIdx === index ? 'active' : ''}}" wx:for="{{tabs}}" wx:key="index"
+        id="tab-{{index}}" data-i="{{index}}" bindtap="switchCat">{{item}}</view>
+</scroll-view>
+
+<main class="body">
+  <view class="panel-head">
+    <view class="panel-title">{{tabs[catIdx]}}</view>
+    <view class="panel-count">国内 {{curDom}} · 国外 {{curFor}}</view>
+  </view>
+  <news-list items="{{items}}" />
+</main>
+
+<view class="footer">每日凌晨自动更新 · 点条目复制原文链接 · 体验版</view>
