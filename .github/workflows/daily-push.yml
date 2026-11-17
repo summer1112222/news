@@ -2,10 +2,15 @@ name: 每日新闻推送
 
 on:
   schedule:
-    # UTC 17:02 = 北京时间次日 01:02
-    # GitHub cron 有几分钟抖动,故避开整点高峰
-    - cron: '2 17 * * *'
-  workflow_dispatch: {}   # 手动触发,方便首次测试
+    # 北京时间 03:02 / 10:02 / 14:02 / 16:02 / 21:02 五轮抓取
+    # (GitHub cron 为 UTC = 北京-8;分钟错开整点避 cron 抖动高峰)
+    # 仅 03:02 全量轮推 Server酱 微信;其余轮只更新 Pages + 小程序体验版
+    - cron: '2 19 * * *'   # 北京 03:02 —— 全量轮(推微信)
+    - cron: '2 2 * * *'    # 北京 10:02
+    - cron: '2 6 * * *'    # 北京 14:02
+    - cron: '2 8 * * *'    # 北京 16:02
+    - cron: '2 13 * * *'   # 北京 21:02
+  workflow_dispatch: {}   # 手动触发,方便首次测试(手动触发等同全量轮,会推微信)
 
 permissions:
   contents: write          # 小程序滚动数据 commit 回 main 需要(部署 Pages 之外的额外写权限)
@@ -28,11 +33,13 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 抓取并生成 HTML + 推送微信
+      - name: 抓取并生成 HTML(仅全量轮推微信)
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
           ANYSEARCH_API_KEY: ${{ secrets.ANYSEARCH_API_KEY }}
-          PAGES_BASE_URL: ${{ secrets.PAGES_BASE_URL }}
+          # 全量轮(北京 03:02 那条 cron)或手动触发才带 PAGES_BASE_URL → 推微信;
+          # 其余 4 轮为空 → 只生成 HTML 不推送,微信一天只收一条
+          PAGES_BASE_URL: ${{ (github.event_name != 'schedule' || github.event.schedule == '2 19 * * *') && secrets.PAGES_BASE_URL || '' }}
           MAX_RESULTS: '10'
           MAX_DAYS: '30'           # 旧闻 cutoff 放宽到 30 天,避免分类国内空窗
           TOP_N: '10'              # 每类每地域最终展示 10 条
