@@ -51,7 +51,7 @@ gh workflow run "每日新闻推送" --ref main
 
 ### CI(.github/workflows/daily-push.yml)
 
-cron 五轮(北京 05:02/10:02/14:02/16:02/21:02,UTC 分钟 :02 避抖动),装依赖 → 跑 build_digest.py(注入 secrets 与 MAX_RESULTS=10/MAX_DAYS=30/TOP_N=10/SEARCH_INTERVAL=3)→ 部署 `./public` 到 GitHub Pages → 小程序数据打包上传体验版 → 滚动数据 commit 回 main。**仅北京 05:02 全量轮(UTC cron `'2 21 * * *'`)和手动 dispatch 才设 `PAGES_BASE_URL` 推微信**,其余 4 轮 PAGES_BASE_URL 为空只生成 HTML——微信一天只收一条,别把推送条件改坏。Secrets:`SERVERCHAN_SENDKEY`、`PAGES_BASE_URL`、`ANYSEARCH_API_KEY`(可选)、`MP_APPID`、`MP_UPLOAD_PRIVATE_KEY`。
+cron 每天一轮(北京 05:02,UTC 分钟 :02 避抖动),装依赖 → 跑 build_digest.py(注入 secrets 与 MAX_RESULTS=10/MAX_DAYS=30/TOP_N=10/SEARCH_INTERVAL=3)→ 部署 `./public` 到 GitHub Pages → 小程序数据打包上传体验版 → 滚动数据 commit 回 main。**北京 05:02 那轮(UTC cron `'2 21 * * *'`)和手动 dispatch 都设 `PAGES_BASE_URL` 推微信**——每天只推一条。Secrets:`SERVERCHAN_SENDKEY`、`PAGES_BASE_URL`、`ANYSEARCH_API_KEY`(可选)、`MP_APPID`、`MP_UPLOAD_PRIVATE_KEY`。
 
 ## 关键约定与陷阱
 
