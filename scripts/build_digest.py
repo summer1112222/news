@@ -47,7 +47,8 @@ from anysearch_search import search, search_many  # noqa: E402
 # (分类标题, 国内搜索词, 国外搜索词) —— 搜索词会自动追加当天北京日期
 # 每个主题分国内/国外各抓 MAX_RESULTS 条,页面顶部「国内/国外」切换决定看哪一半
 # 用"最新"提时效,避免用"头条新闻"这类词(它反而把网站首页/导航页顶上来);
-# 地域类主题(江浙沪皖/上海/南通)的"国外"用涉外/国际视角的搜索词
+# 地域类主题(浙江/上海/南通)的"国外"用涉外/国际视角的搜索词
+# 模块排序:大事在前(时政/财经/科技/教育/医疗),生活类次之(育儿),地域类收尾(浙江/上海/南通)。
 CATEGORIES = [
     # 时政的「国外」用英文检索:中文搜国际时政常被栏目页/旧闻占据,
     # 英文词更容易命中当日外媒单篇报道(实测可拿到当天/前一天稿件)。
@@ -55,14 +56,15 @@ CATEGORIES = [
     # 国内词附该领域权威平台名引导:实测「上海 本地宝 最新 新闻」比「上海 最新 发展 新闻」
     # 更拉本地民生单条(凤凰/腾讯/新浪转载);纯 site: 限定会顶出栏目页故不用,靠源名+「最新 新闻」消歧引流。
     ("📰 时政新闻", "最新 时政 要闻 人民网 新华社", "world politics news"),
-    ("📚 教育新闻", "最新 教育 政策 新闻", "国际 教育 新闻"),  # 教育权威平台名(中国教育报/澎湃教育)偏栏目页,实测改用「政策」措辞出单条(教师法/教育局回应/北师大发布),无小时报混入
-    ("🌐 全球科技", "国内 最新 科技 新闻 36氪 虎嗅", "全球 最新 科技 新闻"),
     ("💰 财经新闻", "最新 财经 股市 第一财经 财新", "国际 最新 财经 股市"),
-    ("🏥 全球医疗", "国内 最新 医疗 健康 新闻", "全球 最新 医疗 健康"),  # 兜底词不带平台名(健康报/丁香园):实测会搜出官网/百科词条等无日期非新闻页
-    ("🏙 江浙沪皖", "江苏 浙江 上海 安徽 最新 新闻 本地宝", "江苏 浙江 上海 安徽 国际 涉外"),
+    ("🌐 科技", "国内 最新 科技 新闻 36氪 虎嗅", "全球 最新 科技 新闻"),
+    ("📚 教育新闻", "最新 教育 政策 新闻", "国际 教育 新闻"),  # 教育权威平台名(中国教育报/澎湃教育)偏栏目页,实测改用「政策」措辞出单条(教师法/教育局回应/北师大发布),无小时报混入
+    ("🏥 医疗", "国内 最新 医疗 健康 新闻", "全球 最新 医疗 健康"),  # 兜底词不带平台名(健康报/丁香园):实测会搜出官网/百科词条等无日期非新闻页
+    ("👨‍👩‍👧 育儿新闻", "最新 育儿 家庭教育 儿童健康 新闻 父母必读", "parenting child development family policy news"),  # 国内改全国育儿(gnews RSS 主源,anysearch 词仅兜底;旧的地域限定因 anysearch 索引滞后已弃);国外用英文搜真实国际育儿(中文搜国外只剩联合国专题页/政府公告)
+    # 原「江浙沪皖」按用户决策收窄为「浙江」(上海另有专属模块,江苏/安徽不再重复覆盖)
+    ("🏙 浙江", "浙江 最新 新闻 本地宝", "浙江 国际 涉外"),
     ("🌆 上海发展", "上海 本地宝 上海发布 最新 新闻", "上海 国际 涉外 新闻"),
     ("🏖 南通发展", "南通 本地宝 南通发布 最新 新闻", "南通 国际 涉外 新闻"),
-    ("👨‍👩‍👧 育儿新闻", "最新 育儿 家庭教育 儿童健康 新闻 父母必读", "parenting child development family policy news"),  # 国内改全国育儿(gnews RSS 主源,anysearch 词仅兜底;旧的地域限定因 anysearch 索引滞后已弃);国外用英文搜真实国际育儿(中文搜国外只剩联合国专题页/政府公告)
 ]
 
 # RSS 源(双侧):9 类全面 RSS 化,anysearch 降级为纯 fallback(某侧 feeds 为空或全部抓取失败才走)。
@@ -82,15 +84,14 @@ def _gnews(q: str, zh: bool = False) -> str:
 # 培养孩子国内侧按用户决策改全国育儿新闻(anysearch 时代限上海/南通是因为地域词搜不出,现在拿当天优先)。
 RSS_FEEDS = {
     "📰 时政新闻": {"dom": ["https://www.chinanews.com.cn/rss/china.xml"], "for": [_gnews("world politics")]},
-    "📚 教育新闻": {"dom": ["https://www.chinanews.com.cn/rss/edu.xml"], "for": [_gnews("education policy")]},
-    "🌐 全球科技": {"dom": [_gnews("科技", zh=True)], "for": [_gnews("technology news")]},
     "💰 财经新闻": {"dom": ["https://www.chinanews.com.cn/rss/finance.xml"], "for": [_gnews("finance stock markets")]},
-    "🏥 全球医疗": {"dom": [_gnews("医疗 OR 健康", zh=True)], "for": [_gnews("global health")]},
-    "🏙 江浙沪皖": {"dom": [_gnews("江苏", zh=True), _gnews("浙江", zh=True), _gnews("安徽", zh=True)],
-                  "for": [_gnews("Jiangsu OR Zhejiang OR Anhui")]},
+    "🌐 科技": {"dom": [_gnews("科技", zh=True)], "for": [_gnews("technology news")]},
+    "📚 教育新闻": {"dom": ["https://www.chinanews.com.cn/rss/edu.xml"], "for": [_gnews("education policy")]},
+    "🏥 医疗": {"dom": [_gnews("医疗 OR 健康", zh=True)], "for": [_gnews("global health")]},
+    "👨‍👩‍👧 育儿新闻": {"dom": [_gnews("育儿 OR 家庭教育", zh=True)], "for": [_gnews("parenting child development")]},
+    "🏙 浙江": {"dom": [_gnews("浙江", zh=True)], "for": [_gnews("Zhejiang")]},
     "🌆 上海发展": {"dom": [_gnews("上海", zh=True)], "for": [_gnews("Shanghai")]},
     "🏖 南通发展": {"dom": [_gnews("南通", zh=True)], "for": [_gnews("Nantong")]},
-    "👨‍👩‍👧 育儿新闻": {"dom": [_gnews("育儿 OR 家庭教育", zh=True)], "for": [_gnews("parenting child development")]},
 }
 
 # HTML 输出目录(GitHub Pages 产物根)
@@ -912,7 +913,7 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
 def short_cat(name: str) -> str:
     """把分类标题精简为干净的导航名:去掉 emoji 和“新闻/发展”等后缀。
 
-    “📰 时政新闻”→“时政”、“🌆 上海发展”→“上海”、“🏙 江浙沪皖”→“江浙沪皖”。
+    “📰 时政新闻”→“时政”、“🌆 上海发展”→“上海”、“🏙 浙江”→“浙江”。
     """
     s = re.sub(r"[\U0001F000-\U0001FAFF☀-➿‍️]", "", name).strip()
     for suf in ("新闻", "发展"):
@@ -1170,8 +1171,8 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
     archive_label = "移动版" if pc else "PC 宽屏版"
     meta_label = " · PC版" if pc else ""
     desc = (
-        f"每日新闻摘要 {today}:时政、教育、全球科技、财经、全球医疗、江浙沪皖、"
-        "上海、南通、育儿 9 类新闻,国内/国外双视角。"
+        f"每日新闻摘要 {today}:时政、财经、科技、教育、医疗、育儿、浙江、"
+        "上海、南通 9 类新闻,国内/国外双视角。"
     )
 
     head = (
