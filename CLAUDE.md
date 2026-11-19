@@ -41,7 +41,7 @@ gh workflow run "每日新闻推送" --ref main
 1. **取数双层**:每分类每地域(国内 dom / 国外 for)优先走 `RSS_FEEDS` 直抓(时政/教育/财经的国内侧用中国新闻网官方 RSS;吃喝玩乐国内侧 gnews 双 feed 沪向+文旅;其余国内侧与全部国外侧用 Google News RSS 搜索 feed;医疗原 chinanews jk.xml 已停更 2026-03,勿改回),全部失败/为空才降级 anysearch 搜索(`_expand_queries` 跳过有 RSS 源的一侧及空 q 的关闭侧,各分类双侧全覆盖时主查询零 anysearch 请求)。anysearch 客户端在 `scripts/anysearch_search.py`(JSON-RPC,`search_many` 按 5 条/批切分并按 query 文本定位段落,单条失败逐条降级)。
 2. **过滤**:`clean_items` —— 大量启发式正则(垃圾域名、栏目/专题/导航页、通用标题、活动/营销页、英文混入、攻略/清单页、繁体港台页等),跨国内/国外共享 `seen` 去重;同稿多版本(措辞微调的近重复)另按标题 bigram Jaccard ≥ 0.40 模糊去重(阈值有实测依据,勿随意下调,见 `_TITLE_SIM_THRESHOLD` 注释)。改这里要先读 `_JUNK_HOSTS` 到 `_GENERIC_PREFIX_RE` 一带的注释。旧闻判断的日期来源分两条路:RSS 条目用自带 `date` 字段(RFC822 pubDate,权威),anysearch 条目从 url+标题+摘要里提(取 ≤ 今天的最大日期,标题可能含未来事件日);`_render_news_item` 显示前才剥标题的时间戳/栏目前缀——过滤和排序依赖原始标题里的日期,别提前剥。
 3. **动态时间窗**:`_filter_tiered` —— 先近 2 天,不足逐级放宽 7 天 → `MAX_DAYS`,仍不足 `_topup` 去日期补搜一轮。优先展示最新。
-4. **排序截断**:`sort_items_recent` 按发布日期降序 → `TOP_N` 截断。
+4. **排序截断**:`sort_items_for`(= `sort_items_recent` 纯日期倒序;吃喝玩乐国内特例:先日期倒序再按「上海 > 沪周边 > 全国」地域档稳定排序,同档内最新在前)→ `TOP_N` 截断;`gen_pc_from_html.py` 复用同一函数保证 PC 版顺序一致。
 5. **渲染**:`build_html`(移动 tab 页)/ `build_html_pc`(宽屏);`gen_pc_from_html.py` 反向解析 index.html 复用 `clean_items`/`sort_items_recent`/`build_html_pc` 离线重生成 PC 版。
 6. **推送**:`build_wechat_msg` + `push_serverchan`(仅设 `PAGES_BASE_URL` 时)。
 

@@ -1024,6 +1024,43 @@ def sort_items_recent(items: list, today: str) -> list:
     return sorted(items, key=lambda it: pub_date(it, today), reverse=True)
 
 
+# 吃喝玩乐地域优先级(用户 2026-11-19 定):上海 > 沪周边 > 全国。
+# 检测只用标题(消费向新闻标题几乎都带地名;snippet 常罗列多地会误判)。
+# 普陀不进上海档(普陀山在舟山,属周边);单字「沪」命中沪上/沪苏等。
+_GL_TITLE = "🍜 吃喝玩乐"
+_GL_SH_RE = re.compile(
+    r"上海|沪|申城|浦东|浦西|外滩|迪士尼|虹桥|临港|崇明|嘉定|松江|青浦|"
+    r"奉贤|金山|闵行|宝山|徐汇|静安|杨浦|虹口|长宁|黄浦|新天地|南京路|豫园"
+)
+_GL_NEARBY_RE = re.compile(
+    r"苏州|杭州|嘉兴|南通|无锡|宁波|南京|常州|湖州|绍兴|舟山|昆山|太仓|"
+    r"张家港|江浙|长三角|江苏|浙江|周边"
+)
+
+
+def _gl_region_rank(it: dict) -> int:
+    t = it.get("title", "")
+    if _GL_SH_RE.search(t):
+        return 0
+    if _GL_NEARBY_RE.search(t):
+        return 1
+    return 2
+
+
+def sort_items_for(cat_title: str, items: list, today: str) -> list:
+    """分类感知的排序:吃喝玩乐按「上海 > 沪周边 > 全国」地域优先级,
+    同档内最新在前;其余分类仍是纯日期倒序。
+
+    实现:先 sort_items_recent(日期倒序),再按档位稳定排序——稳定排序
+    保证同档内日期倒序不被打乱。fetch_all 与 gen_pc_from_html 共用此函数,
+    保证移动/PC/微信预览三端顺序一致。
+    """
+    ordered = sort_items_recent(items, today)
+    if cat_title == _GL_TITLE:
+        ordered = sorted(ordered, key=_gl_region_rank)
+    return ordered
+
+
 def _render_news_item(it: dict, today: str = "") -> str:
     """渲染单条新闻:标题超链接 + 来源/日期元信息 + 一句摘要。"""
     title_text = html.escape(_clip(_strip_title_prefix(it["title"])))
@@ -1545,8 +1582,8 @@ def fetch_all() -> tuple:
         sys.stderr.write(f"[窗口] {title}: 国内{len(dom)} 国外{len(fore)}\n")
         categories_data.append({
             "category": title,
-            "domestic": sort_items_recent(dom, today)[:top_n],
-            "foreign": sort_items_recent(fore, today)[:top_n],
+            "domestic": sort_items_for(title, dom, today)[:top_n],
+            "foreign": sort_items_for(title, fore, today)[:top_n],
         })
 
     total_d = sum(len(c["domestic"]) for c in categories_data)
