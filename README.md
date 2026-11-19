@@ -8,7 +8,7 @@
 ## 架构
 
 ```
-GitHub Actions (cron 01:02 北京)
+GitHub Actions (cron 04:02 北京)
    → scripts/build_digest.py
       → RSS 直抓(主源:中国新闻网 RSS = 时政/教育/财经国内侧;
                  Google News RSS = 其余国内侧 + 全部国外侧)
@@ -59,8 +59,8 @@ git push -u origin main
 约 1-2 分钟后:微信收到一条带链接的消息,点开就是当天的 tab 页。
 
 ### 6. 等待自动触发
-cron 设为 `2 17 * * *`(UTC 17:02 = 北京次日 01:02)。此后每天凌晨 1 点自动跑。
-> GitHub cron 有几分钟抖动且不保证精确;若需严格 06:00,改用 VPS cron。
+cron 设为 `2 20 * * *`(UTC 20:02 = 北京次日 04:02)。此后每天凌晨自动跑。
+> GitHub cron 队列抖动较大,实测可延迟数小时,故特意提前到 04:02 留余量;若需严格准点,改用 VPS cron。
 
 ## 本地测试(不依赖 GitHub)
 
