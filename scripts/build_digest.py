@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""每日新闻摘要 —— 抓取 9 类新闻(每类分国内/国外),生成 tab 页 HTML,推送到微信(Server酱)。
+"""每日新闻摘要 —— 抓取 10 类新闻(每类分国内/国外,吃喝玩乐仅国内),生成 tab 页 HTML,推送到微信(Server酱)。
 
 流程:
   1. 调 anysearch 逐类抓取最新新闻(每类国内 + 国外各 MAX_RESULTS 条)
@@ -65,9 +65,15 @@ CATEGORIES = [
     ("🏙 浙江", "浙江 最新 新闻 本地宝", "浙江 国际 涉外"),
     ("🌆 上海发展", "上海 本地宝 上海发布 最新 新闻", "上海 国际 涉外 新闻"),
     ("🏖 南通发展", "南通 本地宝 南通发布 最新 新闻", "南通 国际 涉外 新闻"),
+    # 吃喝玩乐:全国范围但上海周边优先。国内 gnews feed 双路——沪向词出沪苏浙
+    # 单条(美食/景区/周边游),文旅词接全国大热点(节假日出游/消费券/美食节);
+    # anysearch 兜底词沿用「地域词+最新 新闻」引流惯例。q_for 留空 = 无国外侧
+    # (吃喝玩乐是国内消费场景,方案定稿 2026-11-19):_expand_queries 跳过空词,
+    # _region_raw/_filter_tiered 对空词空 feed 直接返回 [],微信国外段自动跳过。
+    ("🍜 吃喝玩乐", "上海 周边 美食 出游 最新 新闻", ""),
 ]
 
-# RSS 源(双侧):9 类全面 RSS 化,anysearch 降级为纯 fallback(某侧 feeds 为空或全部抓取失败才走)。
+# RSS 源(双侧):各分类全面 RSS 化(吃喝玩乐国外侧刻意留空无 feed),anysearch 降级为纯 fallback(某侧 feeds 为空或全部抓取失败才走)。
 # - 中国新闻网官方 RSS:实时当天、标准 RSS 2.0、不反爬、本地+Actions 均可达(时政/教育/财经国内侧)。
 #   注意:jk.xml(健康频道)已停更(2026-03-06 之后无新条目,2026-11-16 实测),医疗国内改走 gnews 中文 feed。
 # - Google News RSS 搜索 feed:实时当天、带 <source> 标签(真实发布站名);美国 IP 可达 = Actions 可用,
@@ -92,6 +98,13 @@ RSS_FEEDS = {
     "🏙 浙江": {"dom": [_gnews("浙江", zh=True)], "for": [_gnews("Zhejiang")]},
     "🌆 上海发展": {"dom": [_gnews("上海", zh=True)], "for": [_gnews("Shanghai")]},
     "🏖 南通发展": {"dom": [_gnews("南通", zh=True)], "for": [_gnews("Nantong")]},
+    # 吃喝玩乐国内:双 feed 合并——沪向词(上海+美食/景区/周边游)出沪苏浙周边
+    # 内容(实测:美食地图/景区半价/商圈带娃,但时效偏旧靠排序混入),全国词
+    # 「美食节 OR 逛吃 OR 景区」出消费向热点(景区开园/亲子游/市集;实测纯
+    # 「文旅」词会顶出招商/股权等产业新闻,勿改回)。国外侧按用户决策
+    # (2026-11-19)留空:无该侧内容,UI 国外 tab 显示 0 条。
+    "🍜 吃喝玩乐": {"dom": [_gnews("上海 美食 OR 景区 OR 周边游", zh=True),
+                          _gnews("美食节 OR 逛吃 OR 景区", zh=True)], "for": []},
 }
 
 # HTML 输出目录(GitHub Pages 产物根)
@@ -610,6 +623,19 @@ _PROMO_TITLE_HINTS = ("师资团队", "持证上岗", "复荐率", "硬核专业
                       "辅导效果", "家长反馈", "全解析", "避坑", "合规厂家",
                       "成功代理")  # 律所自夸文(德恒成功代理…典型案例),非新闻
 
+# 攻略/清单页(点评站页脚、Top N 目的地盘点、"这N个地方"自媒体清单、《…指南》
+# 图书/攻略页):吃喝玩乐类 anysearch 补搜实测(2026-11-19)混入的非新闻页。
+# 注意「10大推介」这类媒体盘点措辞与真新闻难分,不拦;只拦确定性特征。
+_GUIDE_LISTICLE_RE = re.compile(
+    r"真实点评|完整指南|《[^》]{2,12}(指南|攻略)》|这\s*\d+\s*个(地方|去处|打卡)"
+    r"|\d+\s*大(美食|景点|游览|餐厅)"
+)
+
+# 繁体专用字符(简体文本不使用的码位):标题里 ≥2 个 = 港台媒体攻略/盘点页
+# (如「樂游上海•新晉美食打卡地,竟是這些潮流街區」),非简体新闻源。取 2 个
+# 阈值防个别字出现在机构名/人名里误杀。
+_TRAD_ONLY_CHARS = set("樂遊這裡們歲飲廠學區醫兒後點擊臺閱讀")
+
 # 通用栏目词后紧跟分隔符(_ - — · | [)的,是栏目页不是新闻(重要新闻_xxx / 时政要闻—xxx)
 _GENERIC_PREFIX_RE = re.compile(
     r"^(重要新闻|热点新闻|滚动新闻|时政要闻|时政新闻|国际新闻|国内新闻|"
@@ -638,6 +664,27 @@ def _dedupe_title_key(title: str) -> str:
     s = re.sub(r"[（(]?20\d{2}[-/.年]\d{1,2}[-/.月]\d{1,2}日?[)）]?$", "", s)
     s = re.sub(r"(?<=[^\d])20\d{2}$", "", s)  # 尾部年份(要求前面不是数字)
     return s.strip("，,。.！!？?；;：:-—_|｜、·")
+
+
+# 近重复标题阈值:字符 bigram Jaccard ≥ 此值视为同一篇(措辞微调的同稿多版本)。
+# 实测(2026-11-19 真实数据):精确键挡不住「中国雪乡景区正式开园迎客/风景区开园
+# 迎客/11月19日正式开园/开园 新增冰雪DIY体验」这类簇;当天全部 ≥0.40 的相似对
+# 均为真同稿(教育 0.82 / APEC 展望 0.45 / 冰球联赛开赛vs落幕 0.49),零误杀,
+# 故取 0.40(留出安全边际,勿降到 0.3x——会把仅同题材的不同新闻并掉)。
+_TITLE_SIM_THRESHOLD = 0.40
+
+
+def _title_bigrams(title: str) -> frozenset:
+    """标题归一化后的相邻双字集合,用于近重复相似度。"""
+    s = _dedupe_title_key(title)
+    return frozenset({s[i:i + 2] for i in range(len(s) - 1)}) if len(s) > 1 else frozenset()
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return inter / (len(a) + len(b) - inter) if inter else 0.0
 
 
 def _host_base(url: str) -> str:
@@ -834,6 +881,12 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
         # 机构营销软文:家庭教育服务机构的师资/服务自夸文,非新闻
         if any(h in title for h in _PROMO_TITLE_HINTS):
             continue
+        # 攻略/清单页:点评站页脚、Top N 盘点、《…指南》
+        if _GUIDE_LISTICLE_RE.search(title):
+            continue
+        # 繁体标题:港台媒体攻略/盘点页
+        if sum(1 for ch in title if ch in _TRAD_ONLY_CHARS) >= 2:
+            continue
         # 英文聚合/栏目/活动/报告页(latest news、Department of、Conference、Outlook、含“|”)
         if _is_english_title(title) and (_EN_NAV_RE.search(title) or _EN_EVENT_RE.search(title)):
             continue
@@ -901,6 +954,18 @@ def clean_items(items: list, today: str, seen: dict = None, max_days: int = 7) -
             continue
         if key_title and key_title in seen["title"]:
             continue
+        # 近重复:bigram Jaccard ≥ 阈值的同稿多版本(措辞微调)。先记录再判断——
+        # 被模糊去重丢掉的标题也进 bigrams 列表,后续同簇变体才能都对上
+        # (如 A/B/C/D 四连:B 与 A 相似被丢,D 与 B 相似但与 A 不够,仍要能丢)。
+        # 注意 sims[:-1] 是排除自身的既有标题。
+        bg = _title_bigrams(title)
+        sims = seen.setdefault("bigrams", [])
+        if bg:
+            sims.append(bg)
+            if len(sims) > 1 and any(
+                _jaccard(bg, other) >= _TITLE_SIM_THRESHOLD for other in sims[:-1]
+            ):
+                continue
         if key_url:
             seen["url"].add(key_url)
         if key_title:
@@ -1172,7 +1237,7 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
     meta_label = " · PC版" if pc else ""
     desc = (
         f"每日新闻摘要 {today}:时政、财经、科技、教育、医疗、育儿、浙江、"
-        "上海、南通 9 类新闻,国内/国外双视角。"
+        "上海、南通、吃喝玩乐 10 类新闻,国内/国外双视角(吃喝玩乐仅国内)。"
     )
 
     head = (
@@ -1235,7 +1300,7 @@ def build_html_pc(today: str, categories_data: list) -> str:
 
 
 # 微信消息每类每地域仅预览前 N 条(标题+摘要),其余靠「查看今日全部新闻」链接兜底。
-# 全量推送(9类×2地域×10条含摘要,约160+条)会超 Server酱 desp 字段上限,
+# 全量推送(各类×2地域×10条含摘要,约160+条)会超 Server酱 desp 字段上限,
 # 报 HTTP 400 code=30001 "Data too long for column 'desp'"(2026-11-16 实测)。
 WECHAT_PREVIEW_N = 3
 
@@ -1316,15 +1381,16 @@ def _expand_queries(today: str) -> list:
     """展开查询任务 → [(cat_idx, region, query)],跳过有 RSS 源的那一侧。
 
     RSS_FEEDS 里该侧 feeds 非空的分类走 RSS 直抓,不查 anysearch;
-    9 类双侧全覆盖时 tasks 为空(零 anysearch 请求,限流问题消失),
+    各分类双侧全覆盖时 tasks 为空(零 anysearch 请求,限流问题消失;空 q 的一侧不生成查询),
     仅某侧 feeds 为空或 RSS 全部抓取失败才需要对应查询兜底。
     """
     tasks = []
     for i, (title, q_dom, q_for) in enumerate(CATEGORIES):
         feeds = RSS_FEEDS.get(title, {})
-        if not feeds.get("dom"):
+        # q 为空串 = 该侧刻意关闭(如吃喝玩乐无国外侧):不生成查询
+        if not feeds.get("dom") and q_dom:
             tasks.append((i, "dom", f"{q_dom} {today}"))
-        if not feeds.get("for"):
+        if not feeds.get("for") and q_for:
             tasks.append((i, "for", f"{q_for} {today}"))
     return tasks
 
@@ -1369,7 +1435,10 @@ def _filter_tiered(raw, seen, today, top_n, max_days_cap,
 
     优先展示最新——旧闻只在 raw 里近 2 天/7 天都不够 top_n 时才出现。
     各级 clean_items 共享 seen(已加入的不会重复),结果累加,调用方负责 sort+截断。
+    raw 与 q_base 双空 = 该侧刻意关闭(如无国外侧的分类),返回空不补搜。
     """
+    if not raw and not q_base:
+        return []
     tiers = [t for t in sorted({2, 7, max_days_cap}) if t <= max_days_cap] or [max_days_cap]
     items = []
     for tier in tiers:
@@ -1425,7 +1494,7 @@ def fetch_all() -> tuple:
         bodies = search_many(queries, max_results=max_results, interval=search_interval)
         _save_raw_cache(today, queries, bodies)
     else:
-        # 9 类双侧全部有 RSS feeds:零 anysearch 主查询,gnews+chinanews 直抓
+        # 各分类双侧全部有 RSS feeds(或该侧刻意关闭):零 anysearch 主查询,gnews+chinanews 直抓
         gnews_feeds = sum(len(f.get("dom", [])) + len(f.get("for", [])) for f in RSS_FEEDS.values())
         sys.stderr.write(
             f"[抓取] {len(CATEGORIES)} 类全部走 RSS({gnews_feeds} 个 feed,含 Google News)...\n"
@@ -1440,8 +1509,11 @@ def fetch_all() -> tuple:
 
     def _region_raw(idx: int, title: str, region: str, q_base: str) -> list:
         """一侧的取数:该侧所有 RSS feed 逐个抓取合并;全失败/空才回退
-        anysearch raw(feeds 为空的一侧),再空才去日期兜底重搜。"""
+        anysearch raw(feeds 为空的一侧),再空才去日期兜底重搜。
+        q_base 为空且无 feeds = 该侧刻意关闭(无国外侧的分类),直接返回空。"""
         feeds = RSS_FEEDS.get(title, {}).get(region) or []
+        if not feeds and not q_base:
+            return []
         items = []
         for u in feeds:
             got = fetch_rss(u)

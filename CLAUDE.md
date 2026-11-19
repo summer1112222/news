@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概览
 
-每日新闻摘要流水线：抓取 9 类新闻（每类分国内/国外），生成带分类 tab 的移动版 `public/index.html` + 按日归档的 PC 宽屏版 `public/digest-<日期>.html`，部署到 GitHub Pages，并经 Server酱 推一条瘦身消息到微信。纯 Python，唯一依赖 `requests`，无测试框架。
+每日新闻摘要流水线：抓取 10 类新闻（每类分国内/国外；吃喝玩乐仅国内、q_for 留空），生成带分类 tab 的移动版 `public/index.html` + 按日归档的 PC 宽屏版 `public/digest-<日期>.html`，部署到 GitHub Pages，并经 Server酱 推一条瘦身消息到微信。纯 Python，唯一依赖 `requests`，无测试框架。
 
 ## 常用命令
 
@@ -38,8 +38,8 @@ gh workflow run "每日新闻推送" --ref main
 
 ### 数据流(build_digest.py 为主编排)
 
-1. **取数双层**:每分类每地域(国内 dom / 国外 for)优先走 `RSS_FEEDS` 直抓(时政/教育/财经的国内侧用中国新闻网官方 RSS;其余 6 类国内侧与全部国外侧用 Google News RSS 搜索 feed;医疗原 chinanews jk.xml 已停更 2026-03,勿改回),全部失败/为空才降级 anysearch 搜索(`_expand_queries` 跳过有 RSS 源的那一侧,9 类双侧全覆盖时主查询零 anysearch 请求)。anysearch 客户端在 `scripts/anysearch_search.py`(JSON-RPC,`search_many` 按 5 条/批切分并按 query 文本定位段落,单条失败逐条降级)。
-2. **过滤**:`clean_items` —— 大量启发式正则(垃圾域名、栏目/专题/导航页、通用标题、活动/营销页、英文混入等),跨国内/国外共享 `seen` 去重。改这里要先读 `_JUNK_HOSTS` 到 `_GENERIC_PREFIX_RE` 一带的注释。旧闻判断的日期来源分两条路:RSS 条目用自带 `date` 字段(RFC822 pubDate,权威),anysearch 条目从 url+标题+摘要里提(取 ≤ 今天的最大日期,标题可能含未来事件日);`_render_news_item` 显示前才剥标题的时间戳/栏目前缀——过滤和排序依赖原始标题里的日期,别提前剥。
+1. **取数双层**:每分类每地域(国内 dom / 国外 for)优先走 `RSS_FEEDS` 直抓(时政/教育/财经的国内侧用中国新闻网官方 RSS;吃喝玩乐国内侧 gnews 双 feed 沪向+文旅;其余国内侧与全部国外侧用 Google News RSS 搜索 feed;医疗原 chinanews jk.xml 已停更 2026-03,勿改回),全部失败/为空才降级 anysearch 搜索(`_expand_queries` 跳过有 RSS 源的一侧及空 q 的关闭侧,各分类双侧全覆盖时主查询零 anysearch 请求)。anysearch 客户端在 `scripts/anysearch_search.py`(JSON-RPC,`search_many` 按 5 条/批切分并按 query 文本定位段落,单条失败逐条降级)。
+2. **过滤**:`clean_items` —— 大量启发式正则(垃圾域名、栏目/专题/导航页、通用标题、活动/营销页、英文混入、攻略/清单页、繁体港台页等),跨国内/国外共享 `seen` 去重;同稿多版本(措辞微调的近重复)另按标题 bigram Jaccard ≥ 0.40 模糊去重(阈值有实测依据,勿随意下调,见 `_TITLE_SIM_THRESHOLD` 注释)。改这里要先读 `_JUNK_HOSTS` 到 `_GENERIC_PREFIX_RE` 一带的注释。旧闻判断的日期来源分两条路:RSS 条目用自带 `date` 字段(RFC822 pubDate,权威),anysearch 条目从 url+标题+摘要里提(取 ≤ 今天的最大日期,标题可能含未来事件日);`_render_news_item` 显示前才剥标题的时间戳/栏目前缀——过滤和排序依赖原始标题里的日期,别提前剥。
 3. **动态时间窗**:`_filter_tiered` —— 先近 2 天,不足逐级放宽 7 天 → `MAX_DAYS`,仍不足 `_topup` 去日期补搜一轮。优先展示最新。
 4. **排序截断**:`sort_items_recent` 按发布日期降序 → `TOP_N` 截断。
 5. **渲染**:`build_html`(移动 tab 页)/ `build_html_pc`(宽屏);`gen_pc_from_html.py` 反向解析 index.html 复用 `clean_items`/`sort_items_recent`/`build_html_pc` 离线重生成 PC 版。
@@ -56,7 +56,7 @@ cron 每天一轮(北京 04:02,UTC 分钟 :02 避抖动;实测 GitHub schedule �
 ## 关键约定与陷阱
 
 - **搜索词调优有实测依据**:`CATEGORIES` 里每个搜索词都附注释说明为什么这样措辞(如时政国外用英文、地域词+「本地宝」引流、纯 `site:` 会顶出栏目页等)。改动搜索词前先读注释,别按直觉换词。
-- **本地跑看不到 gnews 是正常的**:Google News RSS 本地被墙,`fetch_rss` 失败返回 `[]` 自动回退 anysearch;Actions(美国 IP)才可用。注意本地首跑会较慢:9 类里 15 个 gnews 侧全部失败,逐个触发「去日期」anysearch 兜底搜(每次前 sleep `SEARCH_INTERVAL`),且该兜底结果不进 raw 缓存;成品缓存写好后同日重跑仍零网络。
+- **本地跑看不到 gnews 是正常的**:Google News RSS 本地被墙,`fetch_rss` 失败返回 `[]` 自动回退 anysearch;Actions(美国 IP)才可用。注意本地首跑会较慢:多数 gnews 侧全部失败,逐个触发「去日期」anysearch 兜底搜(每次前 sleep `SEARCH_INTERVAL`),且该兜底结果不进 raw 缓存;成品缓存写好后同日重跑仍零网络。
 - **gnews 条目链接是跳转链**:`news.google.com/rss/articles/...` 在国内无代理时点不开,但标题/摘要/日期/来源(`<source>` 标签给的发布站名)不受影响;别按「链接打不开」误判为坏数据去过滤它们。
 - **空结果保护**:全部抓取为空时 `main()` 直接报错退出,不覆盖上一次的页面/缓存(疑似限流/额度用尽)。
 - **不泄露密钥**:`push_serverchan` 特意不打完整 URL(含 SendKey),异常只打印 `type(e).__name__`;保持这一约定。

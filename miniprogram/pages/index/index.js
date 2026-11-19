@@ -1,4 +1,4 @@
-// 首页:当天 9 分类浏览。数据静态打包(data/today.js),零网络请求。
+// 首页:当天全部分类(动态来自 data/today.js,现为 10 类)浏览。数据静态打包(data/today.js),零网络请求。
 const data = require('../../data/today.js');
 
 function pick(data, catIdx, region) {
