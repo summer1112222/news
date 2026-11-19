@@ -1,1 +1,1 @@
-module.exports = [{"date":"2026-11-17","total":176},{"date":"2026-11-16","total":172}];
+module.exports = [{"date":"2026-11-18","total":169},{"date":"2026-11-17","total":176},{"date":"2026-11-16","total":172}];
