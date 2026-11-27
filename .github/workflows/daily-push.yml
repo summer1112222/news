@@ -35,6 +35,8 @@ jobs:
           ANYSEARCH_API_KEY: ${{ secrets.ANYSEARCH_API_KEY }}
           # 每天唯一一轮(北京 04:02 cron)或手动触发都带 PAGES_BASE_URL → 推微信
           PAGES_BASE_URL: ${{ (github.event_name != 'schedule' || github.event.schedule == '2 20 * * *') && secrets.PAGES_BASE_URL || '' }}
+          # 昨日阅读统计(Cloudflare Worker /stats);secret 未配则页面/微信不显示该行
+          STATS_READ_TOKEN: ${{ secrets.STATS_READ_TOKEN }}
           MAX_RESULTS: '10'
           MAX_DAYS: '30'           # 旧闻 cutoff 放宽到 30 天,避免分类国内空窗
           TOP_N: '10'              # 每类每地域最终展示 10 条
@@ -54,6 +56,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: 部署到 Cloudflare Pages(主分享域名)
+        continue-on-error: true   # CF 部署失败不阻塞小程序上传;GitHub Pages 仍是兜底入口
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler pages deploy ./public --project-name news-digest --commit-dirty=true
 
       - name: 小程序数据打包并上传体验版
         continue-on-error: true   # 上传失败不阻塞 Pages 部署成果,仅标黄告警
