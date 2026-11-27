@@ -91,6 +91,28 @@ async function handleSummary(url, env) {
   return json(200, { days: daysOut, retention });
 }
 
+// 准点推送(北京 06:56,见 wrangler.toml [triggers]):触发 GitHub workflow_dispatch,
+// 让日报在 07:00 前后准点送达(GitHub 原生 cron 队列延迟 4~8.5h 做不到准点)。
+// workflow 内有「今日已推则跳过」守卫,不会与兜底轮重复推。token 走 secret
+// (env.GH_DISPATCH_TOKEN,细粒度 PAT 仅本仓库 Actions 写权限);日志不打 token。
+async function triggerDailyDispatch(env) {
+  const r = await fetch(
+    'https://api.github.com/repos/summer1112222/news/actions/workflows/daily-push.yml/dispatches',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + (env.GH_DISPATCH_TOKEN || ''),
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'news-digest-cron',
+      },
+      body: JSON.stringify({ ref: 'main' }),
+    }
+  );
+  // 204 = 已受理;非 204 视为失败,错误只含状态码(不含 token),进 CF Worker 日志
+  if (r.status !== 204) throw new Error('dispatch failed: HTTP ' + r.status);
+}
+
 module.exports = {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -104,5 +126,8 @@ module.exports = {
       // D1 等后端故障:不回显异常细节(防信息泄露),只给 500
       return json(500, { error: 'internal' });
     }
+  },
+  async scheduled(controller, env) {
+    await triggerDailyDispatch(env);
   },
 };

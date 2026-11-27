@@ -4,14 +4,18 @@ on:
   schedule:
     # 北京时间 04:02 抓取并推 Server酱 微信(每天一轮)
     # (GitHub cron 为 UTC = 北京-8;分钟错开整点避 cron 抖动高峰)
-    # 提前到 04:02:GitHub schedule 队列常延迟数小时,留提前量让消息尽量在早晨送达
-    - cron: '2 20 * * *'   # 北京 04:02 —— 每天唯一一轮(抓取+推微信+部署)
-  workflow_dispatch: {}   # 手动触发,方便首次测试(手动触发等同定时轮,会推微信)
+    # GitHub schedule 队列实测延迟 4~8.5 小时(消息实际 08:00~12:32 送达),
+    # 故准点推送靠 Cloudflare Worker cron(北京 06:56 触发 dispatch,见 worker/),
+    # 本 cron 仅作兜底:Worker 挂了/没配时,当天 8~12 点仍会送到。
+    # 「今日已推则跳过」守卫保证两种触发并存时一天只推一条。
+    - cron: '2 20 * * *'   # 北京 04:02 —— 兜底轮(准点轮由 Worker 触发 dispatch)
+  workflow_dispatch: {}   # 手动触发/Worker 准点触发(等同全量轮,会推微信;不受查重守卫限制)
 
 permissions:
   contents: write          # 小程序滚动数据 commit 回 main 需要(部署 Pages 之外的额外写权限)
   pages: write           # 部署 GitHub Pages 需要
   id-token: write        # deploy-pages 需要
+  actions: read          # 查重守卫读本 workflow 今日运行记录需要
 
 jobs:
   push:
@@ -20,16 +24,38 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      - name: 查重守卫(定时轮:今日已有成功轮次则跳过;dispatch 不受限)
+        id: guard
+        continue-on-error: true   # 查重失败宁可重复推送,不可让守卫失败漏掉当天的消息
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "dispatch(人工或 Worker 准点),不查重"
+            exit 0
+          fi
+          SINCE=$(TZ=Asia/Shanghai date -d "today 00:00" -u +%Y-%m-%dT%H:%M:%SZ)
+          N=$(gh api "repos/${{ github.repository }}/actions/workflows/daily-push.yml/runs?per_page=50" \
+                --jq "[.workflow_runs[] | select(.created_at >= \"$SINCE\" and .conclusion == \"success\")] | length")
+          echo "今日(北京)已有成功轮次: $N"
+          if [ "$N" -gt 0 ]; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != '1'
 
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != '1'
         with:
           python-version: '3.12'
 
       - name: 安装依赖
+        if: steps.guard.outputs.skip != '1'
         run: pip install -r requirements.txt
 
       - name: 抓取并生成 HTML(仅全量轮推微信)
+        if: steps.guard.outputs.skip != '1'
         env:
           SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
           ANYSEARCH_API_KEY: ${{ secrets.ANYSEARCH_API_KEY }}
@@ -44,20 +70,24 @@ jobs:
         run: python scripts/build_digest.py
 
       - name: 上传 Pages 产物
+        if: steps.guard.outputs.skip != '1'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./public
 
       - name: 部署到 Pages
+        if: steps.guard.outputs.skip != '1'
         id: deploy
         uses: actions/deploy-pages@v4
 
       - name: 安装 Node
+        if: steps.guard.outputs.skip != '1'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: 部署到 Cloudflare Pages(主分享域名)
+        if: steps.guard.outputs.skip != '1'
         continue-on-error: true   # CF 部署失败不阻塞小程序上传;GitHub Pages 仍是兜底入口
         env:
           # wrangler 4.x:CF_API_TOKEN 环境变量已弃用,改用 CLOUDFLARE_API_TOKEN(secret 名不变)
@@ -66,6 +96,7 @@ jobs:
         run: npx wrangler pages deploy ./public --project-name news-digest --commit-dirty=true
 
       - name: 小程序数据打包并上传体验版
+        if: steps.guard.outputs.skip != '1'
         continue-on-error: true   # 上传失败不阻塞 Pages 部署成果,仅标黄告警
         env:
           MP_APPID: ${{ secrets.MP_APPID }}
@@ -76,6 +107,7 @@ jobs:
           node scripts/mp_upload.mjs
 
       - name: 提交小程序滚动数据回 main
+        if: steps.guard.outputs.skip != '1'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

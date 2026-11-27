@@ -53,7 +53,9 @@ gh workflow run "每日新闻推送" --ref main
 
 ### CI(.github/workflows/daily-push.yml)
 
-cron 每天一轮(北京 04:02,UTC 分钟 :02 避抖动;实测 GitHub schedule 队列可延迟数小时,故从 05:02 提前),装依赖 → 跑 build_digest.py(注入 secrets 与 MAX_RESULTS=10/MAX_DAYS=30/TOP_N=10/SEARCH_INTERVAL=3)→ 部署 `./public` 到 GitHub Pages → 部署 `./public` 到 Cloudflare Pages(主分享域名,`continue-on-error`:CF 挂了 GitHub Pages 仍是兜底入口)→ 小程序数据打包上传体验版 → 滚动数据 commit 回 main。**北京 04:02 那轮(UTC cron `'2 20 * * *'`)和手动 dispatch 都设 `PAGES_BASE_URL` 推微信**——每天只推一条。Secrets:`SERVERCHAN_SENDKEY`、`PAGES_BASE_URL`(指向自定义域名)、`ANYSEARCH_API_KEY`(可选)、`STATS_READ_TOKEN`(可选)、`CF_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`MP_APPID`、`MP_UPLOAD_PRIVATE_KEY`。
+**准点推送(2026-11-27 起)**:Cloudflare Worker cron(北京 06:56,`worker/wrangler.toml [triggers]`)触发 `workflow_dispatch` → 构建约 1 分钟 → 微信消息 ~06:57 送达(GitHub schedule 队列实测延迟 4~8.5 小时,原生 cron 做不到准点)。**查重守卫**:job 第一步(仅 schedule 事件)查「今日(北京日)是否已有成功轮次」,有则全部步骤跳过——Worker 准点轮与 GitHub 04:02 兜底轮并存时**一天只推一条**;dispatch(人工/Worker)不受守卫限制。GitHub 原生 cron(北京 04:02,UTC `'2 20 * * *'`)保留兜底:Worker 挂了/未部署时当天 8~12 点仍会送到。Worker 需 secret `GH_DISPATCH_TOKEN`(GitHub 细粒度 PAT,仅本仓库 Actions 写权限)。
+
+流程:查重守卫 → 装依赖 → 跑 build_digest.py(注入 secrets 与 MAX_RESULTS=10/MAX_DAYS=30/TOP_N=10/SEARCH_INTERVAL=3)→ 部署 `./public` 到 GitHub Pages → 部署 `./public` 到 Cloudflare Pages(主分享域名,`continue-on-error`:CF 挂了 GitHub Pages 仍是兜底入口)→ 小程序数据打包上传体验版 → 滚动数据 commit 回 main。**dispatch(北京 04:02 cron 轮已被守卫覆盖)设 `PAGES_BASE_URL` 推微信**。Secrets:`SERVERCHAN_SENDKEY`、`PAGES_BASE_URL`(指向自定义域名)、`ANYSEARCH_API_KEY`(可选)、`STATS_READ_TOKEN`(可选)、`CF_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`、`MP_APPID`、`MP_UPLOAD_PRIVATE_KEY`;Worker 侧 secret(经 `wrangler secret put`):`STATS_READ_TOKEN`(同名同值)、`GH_DISPATCH_TOKEN`。
 
 ## 关键约定与陷阱
 

@@ -10,6 +10,14 @@ name = "news-digest-stats"
 main = "src/worker.js"
 compatibility_date = "2026-11-01"
 
+# 准点推送(2026-11-27):北京 06:56 触发 GitHub workflow_dispatch,
+# 构建约 1 分钟 → 微信消息 ~06:57 送达(目标 07:00 前后 ±2 分钟)。
+# GitHub 原生 cron(04:02)保留兜底,workflow 内有「今日已推则跳过」守卫,不会重复推。
+# 另需 secret:wrangler secret put GH_DISPATCH_TOKEN(GitHub 细粒度 PAT,
+# 仅 summer1112222/news 仓库、仅 Actions 写权限)
+[triggers]
+crons = ["56 22 * * *"]   # UTC 22:56 = 北京 06:56
+
 [[d1_databases]]
 binding = "DB"
 database_name = "news-digest-events"
