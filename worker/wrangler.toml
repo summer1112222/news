@@ -1,0 +1,16 @@
+# 埋点统计 Worker 配置(一次性手动部署,不进每日 CI;详见 docs/superpowers/specs/2026-11-26-phase-a-growth-design.md)
+# 部署步骤:
+#   1. wrangler d1 create news-digest-events   → 把 database_id 填到下面
+#   2. wrangler d1 execute news-digest-events --file schema.sql --remote
+#   3. wrangler secret put STATS_READ_TOKEN    (随机串,同值配到 GitHub Secrets)
+#   4. wrangler deploy
+#   5. Cloudflare 后台把 zone 级 Worker route 绑到 <DOMAIN>/beacon*、/stats*、/summary*
+#      (zone 级 route 优先于 Pages custom domain,二者共存)
+name = "news-digest-stats"
+main = "src/worker.js"
+compatibility_date = "2026-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "news-digest-events"
+database_id = "REPLACE_WITH_D1_ID"   # wrangler d1 create 后回填
