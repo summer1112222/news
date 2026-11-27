@@ -1201,6 +1201,90 @@ _PAGE_JS = """
 })();
 """
 
+# 埋点 JS 模板(Phase A 反馈闭环):__BEACON_URL__ 由 _beacon_js() 替换为绝对 URL。
+# 事件字段仅 vid/type/cat/region/item,全部非个人身份信息。
+# sendBeacon 发 string 即 text/plain 简单请求,无 CORS 预检;绝对 URL —— github.io
+# 后备入口的访问同样上报(视作真实读者)。外层与每段逻辑全包 try/catch:埋点任何
+# 故障静默失败,绝不影响页面渲染与交互。
+_BEACON_JS_TEMPLATE = """
+(function(){
+  'use strict';
+  try{
+    var BEACON=__BEACON_URL__;
+    var VID_KEY='news-digest-vid';
+    function getVid(){
+      try{
+        var v=localStorage.getItem(VID_KEY);
+        if(v&&/^[0-9a-f]{1,32}$/.test(v))return v;
+        var raw=(crypto.randomUUID?crypto.randomUUID():((Date.now()+'')+Math.random().toString(16)));
+        var v2=raw.replace(/[^0-9a-f]/g,'').slice(0,16);
+        while(v2.length<16)v2+='0';
+        localStorage.setItem(VID_KEY,v2);
+        return v2;
+      }catch(e){return '';}
+    }
+    var REG_LABEL={domestic:'国内',foreign:'国外'};
+    function catLabel(i){
+      try{
+        var btn=document.querySelector('[data-cat="'+i+'"]');
+        return btn?btn.textContent.trim().slice(0,40):'';
+      }catch(e){return '';}
+    }
+    function send(payload){
+      try{
+        payload.vid=getVid();
+        navigator.sendBeacon(BEACON,JSON.stringify(payload));
+      }catch(e){}
+    }
+    send({type:'view'});
+    document.addEventListener('click',function(ev){
+      try{
+        var t=ev.target;
+        if(!t||!t.closest)return;
+        var tabBtn=t.closest('[data-cat]');
+        if(tabBtn){
+          var i=parseInt(tabBtn.getAttribute('data-cat'),10)||0;
+          var rb=document.querySelector('[data-region].active');
+          send({type:'tab',cat:catLabel(i),region:rb?(REG_LABEL[rb.getAttribute('data-region')]||''):''});
+          return;
+        }
+        var regBtn=t.closest('[data-region]');
+        if(regBtn){
+          var activeTab=document.querySelector('[data-cat].active');
+          var ci=activeTab?parseInt(activeTab.getAttribute('data-cat'),10)||0:0;
+          send({type:'tab',cat:catLabel(ci),region:REG_LABEL[regBtn.getAttribute('data-region')]||''});
+          return;
+        }
+        var link=t.closest('.news-title');
+        if(link&&link.getAttribute('href')){
+          var panel=link.closest('[data-panel]');
+          var group=link.closest('.news-group');
+          if(panel&&group){
+            var pi=parseInt(panel.getAttribute('data-panel'),10)||0;
+            var titles=group.querySelectorAll('.news-title');
+            var idx=0;
+            for(var k=0;k<titles.length;k++){if(titles[k]===link){idx=k;break;}}
+            send({type:'click',cat:catLabel(pi),region:group.classList.contains('foreign')?'国外':'国内',item:idx});
+          }
+        }
+      }catch(e){}
+    });
+  }catch(e){}
+})();
+"""
+
+
+def _beacon_js() -> str:
+    """匿名埋点 JS;未设 PAGES_BASE_URL(本地跑)返回 "" 不注入零上报。
+
+    beacon 目标 = PAGES_BASE_URL 去尾斜杠 + '/beacon'(Cloudflare Worker,见
+    docs/superpowers/specs/2026-11-26-phase-a-growth-design.md)。
+    """
+    base = os.environ.get("PAGES_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        return ""
+    return _BEACON_JS_TEMPLATE.replace("__BEACON_URL__", json.dumps(base + "/beacon"))
+
 
 def _render_panels(today: str, categories_data: list, pc: bool) -> str:
     """渲染全部分类面板,国内/国外两组条目共用同一套 item/group 渲染。"""
@@ -1272,6 +1356,10 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
     archive_href = "index.html" if pc else f"digest-{today}.html"
     archive_label = "移动版" if pc else "PC 宽屏版"
     meta_label = " · PC版" if pc else ""
+    # 分享卡片文案:微信内 H5 无认证公众号不能自定义卡片,默认卡片取 <title>,
+    # 让标题自带信息量(日期·类数·条数)本身就是钩子。
+    total = dom_total + for_total
+    title_text = f"{today} · {n}类新闻精选 · {total}条"
     desc = (
         f"每日新闻摘要 {today}:时政、财经、科技、教育、医疗、育儿、浙江、"
         "上海、南通、吃喝玩乐 10 类新闻,国内/国外双视角(吃喝玩乐仅国内)。"
@@ -1282,9 +1370,9 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n'
         '<meta name="color-scheme" content="light dark">\n'
-        f'<title>每日新闻摘要{"(PC版) " if pc else " "}{html.escape(today)}</title>\n'
+        f'<title>{html.escape(title_text)}{meta_label}</title>\n'
         f'<meta name="description" content="{html.escape(desc)}">\n'
-        f'<meta property="og:title" content="每日新闻摘要 {html.escape(today)}">\n'
+        f'<meta property="og:title" content="{html.escape(title_text)}">\n'
         f'<meta property="og:description" content="{html.escape(desc)}">\n'
         '<meta property="og:type" content="website">\n'
         '<meta name="twitter:card" content="summary">\n'
@@ -1314,6 +1402,9 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
     if pc:
         body_inner = '<div class="wrap">\n' + body_inner + '\n</div>'
 
+    # 埋点脚本放 body 尾部(_PAGE_JS 之后):需要 DOM,且不改动 _PAGE_JS 原函数体
+    beacon_js = _beacon_js()
+    beacon_block = f"<script>\n{beacon_js}</script>\n" if beacon_js else ""
     return (
         head
         + '<body id="top">\n'
@@ -1322,6 +1413,7 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
         + footer + "\n"
         + '<button type="button" id="toTop" class="to-top" aria-label="回到顶部" hidden>↑</button>\n'
         + '<script>\n' + _PAGE_JS + '</script>\n'
+        + beacon_block
         + '</body>\n</html>'
     )
 
