@@ -1286,6 +1286,51 @@ def _beacon_js() -> str:
     return _BEACON_JS_TEMPLATE.replace("__BEACON_URL__", json.dumps(base + "/beacon"))
 
 
+def _fetch_yesterday_stats(today: str):
+    """拉昨日阅读统计(GET {PAGES_BASE_URL}/stats,Task 2 Worker 契约)。
+
+    返回 dict(Worker /stats 的数据体)或 None。任何失败都静默降级为 None——
+    统计只是展示增强,绝不能阻塞日报主流水线。密钥约定:不打 URL(含 token)、
+    异常只打印类型名(同 push_serverchan)。
+    """
+    base = os.environ.get("PAGES_BASE_URL", "").strip().rstrip("/")
+    token = os.environ.get("STATS_READ_TOKEN", "").strip()
+    if not base or not token:
+        return None
+    try:
+        yesterday = (
+            datetime.datetime.strptime(today, "%Y-%m-%d") - datetime.timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+    try:
+        r = requests.get(
+            f"{base}/stats", params={"date": yesterday, "token": token}, timeout=2
+        )
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict):
+            return data
+    except Exception as e:
+        sys.stderr.write(f"[统计] 拉取失败({type(e).__name__})\n")
+    return None
+
+
+def _stats_line(stats) -> str:
+    """页面 masthead 的「昨日 N 人阅读 · 最热:X」;stats 缺失或 0 阅读返回 ''。"""
+    if not isinstance(stats, dict):
+        return ""
+    n = stats.get("unique_vids") or 0
+    if not n:
+        return ""
+    line = f" · 昨日 {n} 人阅读"
+    by_cat = stats.get("by_cat") or {}
+    if by_cat:
+        hottest = max(by_cat.items(), key=lambda kv: kv[1])[0]
+        line += f" · 最热:{html.escape(str(hottest))}"
+    return line
+
+
 def _render_panels(today: str, categories_data: list, pc: bool) -> str:
     """渲染全部分类面板,国内/国外两组条目共用同一套 item/group 渲染。"""
     prefix = "pc-panel-" if pc else "panel-"
@@ -1319,8 +1364,11 @@ def _render_panels(today: str, categories_data: list, pc: bool) -> str:
     return "\n".join(panels)
 
 
-def _render_page(today: str, categories_data: list, pc: bool) -> str:
-    """生成完整页面。PC/移动两版共用头部结构、交互脚本与条目渲染,仅布局不同。"""
+def _render_page(today: str, categories_data: list, pc: bool, stats=None) -> str:
+    """生成完整页面。PC/移动两版共用头部结构、交互脚本与条目渲染,仅布局不同。
+
+    stats:昨日阅读统计(_fetch_yesterday_stats 的返回),None 或 0 阅读时不显示该行。
+    """
     dom_total = sum(len(c["domestic"]) for c in categories_data)
     for_total = sum(len(c["foreign"]) for c in categories_data)
     n = len(categories_data)
@@ -1388,7 +1436,7 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
         '<header class="masthead">\n'
         '<h1 class="masthead-title">每日新闻摘要</h1>\n'
         f'<p class="masthead-meta">{html.escape(today)} · 更新 {updated} · {n}类 · '
-        f'国内{dom_total}条 · 国外{for_total}条{meta_label}</p>\n'
+        f'国内{dom_total}条 · 国外{for_total}条{meta_label}{_stats_line(stats)}</p>\n'
         f'{region_bar}\n'
         '</header>'
     )
@@ -1418,14 +1466,14 @@ def _render_page(today: str, categories_data: list, pc: bool) -> str:
     )
 
 
-def build_html(today: str, categories_data: list) -> str:
+def build_html(today: str, categories_data: list, stats=None) -> str:
     """移动端页面:刊头 + 国内/国外切换 + sticky 分类导航 + 发丝线分隔的条目流。"""
-    return _render_page(today, categories_data, pc=False)
+    return _render_page(today, categories_data, pc=False, stats=stats)
 
 
-def build_html_pc(today: str, categories_data: list) -> str:
+def build_html_pc(today: str, categories_data: list, stats=None) -> str:
     """PC 宽屏页面:报纸风 serif 排版,分类 tab + 国内/国外切换,单列居中阅读。"""
-    return _render_page(today, categories_data, pc=True)
+    return _render_page(today, categories_data, pc=True, stats=stats)
 
 
 # 微信消息每类每地域仅预览前 N 条(标题+摘要),其余靠「查看今日全部新闻」链接兜底。
@@ -1434,7 +1482,7 @@ def build_html_pc(today: str, categories_data: list) -> str:
 WECHAT_PREVIEW_N = 3
 
 
-def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
+def build_wechat_msg(today: str, categories_data: list, page_url: str, stats=None) -> tuple:
     """微信消息(A版,适配国内/国外):按地域分两大段,段内按分类分组。
 
     排版向预览页靠拢(在 Server酱 markdown 能力内):
@@ -1450,10 +1498,14 @@ def build_wechat_msg(today: str, categories_data: list, page_url: str) -> tuple:
     for_total = sum(len(c["foreign"]) for c in categories_data)
     n = len(categories_data)
     url = page_url.rstrip("/") + "/"
+    # 反馈可见性:昨日阅读人数进 meta 行(与页面同条件:stats 有效且 >0)
+    wechat_stats = ""
+    if isinstance(stats, dict) and stats.get("unique_vids"):
+        wechat_stats = f" · 昨日{stats['unique_vids']}人阅读"
 
     lines = [
         "# 📰 每日新闻摘要",
-        f"{today} · {n}类 · 国内{dom_total}条 · 国外{for_total}条",
+        f"{today} · {n}类 · 国内{dom_total}条 · 国外{for_total}条{wechat_stats}",
         "",
         "---",
         "",
@@ -1728,17 +1780,19 @@ def main():
         )
 
     os.makedirs(OUT_DIR, exist_ok=True)
+    # 昨日阅读统计(Phase A 反馈闭环):拉取失败静默 None,页面照常出
+    stats = _fetch_yesterday_stats(today)
     out_path = os.path.join(OUT_DIR, "index.html")
-    _write_text_atomic(out_path, build_html(today, categories_data))
+    _write_text_atomic(out_path, build_html(today, categories_data, stats=stats))
     sys.stderr.write(f"[生成] {out_path}\n")
     # PC 版宽屏页面,文件名含日期,便于按日归档(移动版 index.html 仍作 Pages 首页)
     pc_path = os.path.join(OUT_DIR, f"digest-{today}.html")
-    _write_text_atomic(pc_path, build_html_pc(today, categories_data))
+    _write_text_atomic(pc_path, build_html_pc(today, categories_data, stats=stats))
     sys.stderr.write(f"[生成] {pc_path} (PC版)\n")
 
     page_url = os.environ.get("PAGES_BASE_URL", "").strip()
     if page_url:
-        title, md = build_wechat_msg(today, categories_data, page_url)
+        title, md = build_wechat_msg(today, categories_data, page_url, stats=stats)
         push_serverchan(title, md)
         sys.stderr.write(f"[完成] 已推送到微信,页面 {page_url}\n")
     else:
