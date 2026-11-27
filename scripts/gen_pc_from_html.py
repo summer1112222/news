@@ -18,8 +18,10 @@ from build_digest import build_html_pc, clean_items, sort_items_for  # noqa: E40
 INDEX = os.path.join("public", "index.html")
 doc = open(INDEX, encoding="utf-8").read()
 
-# 从 <title> 提日期
-m = re.search(r"<title>每日新闻摘要 (\d{4}-\d{2}-\d{2})", doc)
+# 从 <title> 提日期。两代格式都兼容:新分享卡片「{today} · {n}类新闻精选 · {N}条」
+# 与旧「每日新闻摘要 {today}」(标题里日期是唯一 YYYY-MM-DD;本工具只解析移动版
+# index.html,标题开头就是日期,无 PC 后缀歧义)
+m = re.search(r"<title>(?:每日新闻摘要 )?(\d{4}-\d{2}-\d{2})", doc)
 today = m.group(1) if m else ""
 if not today:
     sys.exit("❌ 未在 public/index.html 找到日期")

@@ -126,5 +126,28 @@ class DisplayStatsTest(unittest.TestCase):
         self.assertIn("昨日 5 人阅读", out_idx)
 
 
+class MalformedStatsTest(unittest.TestCase):
+    """评审修复(Important #2):畸形 stats 不得炸掉渲染——统计故障绝不阻塞主流水线。"""
+
+    def test_stats_line_malformed_by_cat_does_not_raise(self):
+        # by_cat 值混型:不崩,昨日行仍在,最热取整数值的键
+        line = b._stats_line({"unique_vids": 3, "by_cat": {"a": 1, "b": "x"}})
+        self.assertIn("昨日 3 人阅读", line)
+        # by_cat 是 truthy list:不崩,退化为只显示昨日行
+        line2 = b._stats_line({"unique_vids": 3, "by_cat": ["x"]})
+        self.assertIn("昨日 3 人阅读", line2)
+        self.assertNotIn("最热", line2)
+
+    def test_stats_line_malformed_unique_vids_returns_empty(self):
+        self.assertEqual(b._stats_line({"unique_vids": "8x", "by_cat": {}}), "")
+        self.assertEqual(b._stats_line({"unique_vids": None, "by_cat": {}}), "")
+        self.assertEqual(b._stats_line({"unique_vids": [1], "by_cat": {}}), "")
+
+    def test_build_html_malformed_stats_no_crash(self):
+        out = b.build_html(TODAY, fake_cats(),
+                           stats={"unique_vids": 3, "by_cat": {"a": 1, "b": "x"}})
+        self.assertIn("昨日 3 人阅读", out)
+
+
 if __name__ == "__main__":
     unittest.main()

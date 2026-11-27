@@ -1317,17 +1317,26 @@ def _fetch_yesterday_stats(today: str):
 
 
 def _stats_line(stats) -> str:
-    """页面 masthead 的「昨日 N 人阅读 · 最热:X」;stats 缺失或 0 阅读返回 ''。"""
+    """页面 masthead 的「昨日 N 人阅读 · 最热:X」;stats 缺失或 0 阅读返回 ''。
+
+    统计数据来自网络(Worker /stats),可能是任意畸形 dict——任何畸形都必须
+    静默降级(去掉最热/整行),绝不能在 build_html 里抛异常炸掉日报主流水线
+    (spec 反目标:统计功能故障不得阻塞主流程)。
+    """
     if not isinstance(stats, dict):
         return ""
-    n = stats.get("unique_vids") or 0
-    if not n:
+    n = stats.get("unique_vids")
+    if not isinstance(n, int) or n <= 0:
         return ""
     line = f" · 昨日 {n} 人阅读"
-    by_cat = stats.get("by_cat") or {}
-    if by_cat:
-        hottest = max(by_cat.items(), key=lambda kv: kv[1])[0]
-        line += f" · 最热:{html.escape(str(hottest))}"
+    by_cat = stats.get("by_cat")
+    if isinstance(by_cat, dict) and by_cat:
+        try:
+            # 值非整数的键按 0 计,取不到就退化为只显示昨日行
+            hottest = max(by_cat.items(), key=lambda kv: kv[1] if isinstance(kv[1], int) else -1)[0]
+            line += f" · 最热:{html.escape(str(hottest))}"
+        except Exception:
+            pass
     return line
 
 
